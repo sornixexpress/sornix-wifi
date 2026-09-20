@@ -1,0 +1,35 @@
+# Sornix Express WiFi - Cloudflare Workers + D1 (all free tier)
+# Deploy:  npx wrangler deploy
+# Docs:    see README.md
+
+name = "sornix-wifi"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# Static pages served by the Worker (admin panel + customer order-status page)
+[assets]
+directory = "public"
+binding = "ASSETS"
+html_handling = "none"   # keep exact /admin.html and /verify.html URLs (router pages link to them)
+
+# D1 database (free: 5 GB storage, 5M reads/day, 100K writes/day)
+# Create it with:  npx wrangler d1 create sornix-wifi
+# then paste the printed database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "sornix-wifi"
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+# Non-secret configuration
+[vars]
+PUBLIC_ORIGIN = "https://isp.sornix.com.ng"   # custom domain you attach to this Worker
+TIMEZONE = "Africa/Lagos"
+MAIL_FROM = "Sornix WiFi <noreply@sornix.com.ng>"
+
+# SECRETS (set with `npx wrangler secret put NAME`, never store here):
+#   ROUTER_TOKEN        shared secret the Groove router uses for /router/sync (32+ random chars)
+#   OTP_SALT            random string 16+ chars, used to hash OTPs and derive account password encryption key
+#   ADMIN_EMAILS        comma separated admin emails, e.g. sornixglobal@gmail.com
+#   RESEND_API_KEY      optional - free tier (100 mails/day) delivers admin OTP codes by email
+#   TELEGRAM_BOT_TOKEN  optional - fallback OTP delivery via Telegram bot
+#   TELEGRAM_CHAT_ID    optional - chat id that receives OTP codes

@@ -1,0 +1,146 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sornix admin</title>
+<style>*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#0b1220;color:#e5e9f0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}main{max-width:900px;margin:auto;padding:16px 16px 90px}h1{font-size:1.4rem;margin:.4rem 0}h2{font-size:1.05rem;margin:.2rem 0 .6rem}.muted{color:#93a0b5}.err{color:#ff9b8f}.ok{color:#7fd6a4}.warn{color:#f5a524}.card{background:#141d30;border:1px solid #24304a;border-radius:10px;padding:14px;margin:10px 0}input,textarea,select,button,.btn{display:block;width:100%;margin:6px 0;padding:11px;border-radius:8px;border:1px solid #2c3a57;background:#0b1220;color:inherit;font:inherit;text-decoration:none;text-align:center}textarea,select{text-align:left}button.p,.btn.p{background:#f5a524;border-color:#f5a524;color:#1b1200;font-weight:700}.fab{position:fixed;right:16px;bottom:16px;width:56px;height:56px;border-radius:50%;background:#25d366;display:flex;align-items:center;justify-content:center;font-size:26px;text-decoration:none;box-shadow:0 3px 10px #0009}
+.bar{display:flex;justify-content:space-between;align-items:center;gap:10px}.bar button{width:auto;padding:8px 14px}
+.tabs{display:flex;gap:6px;overflow-x:auto}.tabs button{width:auto;white-space:nowrap;margin:0}.tabs .on{background:#24304a}
+label{display:block;color:#93a0b5;font-size:.9rem;margin-top:8px}label input,label textarea,label select{color:#e5e9f0}label.chk{display:flex;gap:8px;align-items:center;color:#e5e9f0}label.chk input{width:auto;margin:0}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{padding:8px;border-bottom:1px solid #24304a;text-align:left;white-space:nowrap}
+button.sm{display:inline-block;width:auto;padding:6px 10px;margin:0 4px 0 0}.s-requested{color:#f5a524}.s-approved{color:#9fc4ff}.s-activated{color:#7fd6a4}.s-rejected,.s-revoked,.s-revoking{color:#ff9b8f}.s-new{color:#7fd6a4}.s-used{color:#93a0b5}
+img.th{height:44px;width:120px;object-fit:cover;border-radius:6px}#toast{position:fixed;left:16px;bottom:16px;background:#141d30;border:1px solid #24304a;padding:10px 14px;border-radius:8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}.kpi{background:#141d30;border:1px solid #24304a;border-radius:10px;padding:12px}.kpi b{display:block;font-size:1.5rem;color:#f5a524}.kpi span{color:#93a0b5;font-size:.82rem}
+.codes{font:14px/1.7 ui-monospace,Menlo,Consolas,monospace;background:#0b1220;border:1px solid #2c3a57;border-radius:8px;padding:10px;max-height:240px;overflow:auto;white-space:pre-wrap}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+@media print{body{background:#fff;color:#000}.noprint{display:none!important}.codes{border:0;color:#000;background:#fff}}
+</style></head><body><main id="app"></main><div id="toast" hidden></div><a class="fab noprint" id="fab" hidden aria-label="WhatsApp support" target="_blank" rel="noopener">💬</a>
+<script>
+var API="/api",T=null,D=null,tab="dash",ed=null,made=null;
+try{T=sessionStorage.getItem("sxt")}catch(e){}
+var q=function(s){return document.querySelector(s)};
+function h(t,a){var e=document.createElement(t),c=[].slice.call(arguments,2);a=a||{};for(var k in a){if(k==="on"){for(var v in a.on)e.addEventListener(v,a.on[v])}else if(k in e)e[k]=a[k];else e.setAttribute(k,a[k])}
+ c.reduce(function(x,y){return x.concat(y)},[]).forEach(function(x){if(x!=null&&x!==false)e.append(x)});return e}
+function api(action,data,get){var o=get?{}:{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(Object.assign({action:action,token:T},data||{}))};
+ return fetch(get?API+"?action="+action:API,o).then(function(r){return r.json()}).then(function(r){if(r.error==="unauthorized")out();return r}).catch(function(){return{ok:false,error:"network"}})}
+function flash(m,bad){var t=q("#toast");t.textContent=m;t.className=bad?"err":"ok";t.hidden=false;clearTimeout(flash.t);flash.t=setTimeout(function(){t.hidden=true},3500)}
+function setFab(n){n=String(n||"").replace(/\D/g,"");if(n){q("#fab").href="https://wa.me/"+n;q("#fab").hidden=false}}
+function btn(t,f,p){return h("button",{className:p?"p sm":"sm",on:{click:f}},t)}
+function money(n){return "\u20A6"+Number(n||0).toLocaleString()}
+async function act(a,d){var r=await api(a,d);if(!r.ok){flash("Failed: "+(r.error||"unknown"),1);return null}flash("Saved");ed=null;await load();return r}
+async function load(){var r=await api("adminGetAll");if(r.ok){D=r;setFab(D.settings.whatsapp_phone);render()}else if(r.error!=="unauthorized")flash("Could not load: "+r.error,1)}
+function out(){T=null;D=null;try{sessionStorage.removeItem("sxt")}catch(e){}render()}
+function loginView(){var em=h("input",{type:"email",placeholder:"Admin email",autocomplete:"username"}),otp=h("input",{inputMode:"numeric",maxLength:4,placeholder:"4-digit code",hidden:true}),m=h("p",{className:"muted"}),b=h("button",{className:"p"},"Send code");
+ b.onclick=async function(){m.className="muted";
+  if(otp.hidden){m.textContent="Sending…";var r=await api("sendOtp",{email:em.value});if(r.ok){otp.hidden=false;em.disabled=true;b.textContent="Verify code";m.textContent="If this email is an admin, a code was sent. It lasts 5 minutes.";otp.focus()}else{m.className="err";m.textContent="Could not send. Try again."}}
+  else{var r2=await api("verifyOtp",{email:em.value,otp:otp.value});if(r2.ok){T=r2.token;try{sessionStorage.setItem("sxt",T)}catch(e){}load()}else{m.className="err";m.textContent="Wrong or expired code. Reload this page to request a new one."}}};
+ return h("div",{className:"card"},h("h2",{},"Admin sign in"),em,otp,b,m)}
+var TABS=[["dash","Dashboard"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};
+function render(){var m=q("#app");m.textContent="";if(!T){m.append(loginView());return}if(!D){m.append(h("p",{className:"muted"},"Loading…"));return}
+ m.append(h("div",{className:"bar noprint"},h("h1",{},(D.settings.site_name||"Sornix")+" admin"),h("button",{on:{click:out}},"Sign out")),
+  h("div",{className:"tabs noprint"},TABS.map(function(t){return h("button",{className:t[0]===tab?"on":"",on:{click:function(){tab=t[0];ed=null;render()}}},t[1])})),P[tab]())}
+function table(head,rows){return h("div",{className:"scroll"},h("table",{},h("thead",{},h("tr",{},head.map(function(x){return h("th",{},x)}))),h("tbody",{},rows)))}
+function sel(opts,val){return h("select",{},opts.map(function(o){return h("option",{value:o[0],selected:o[0]===val},o[1])}))}
+
+// ---------------- Dashboard ----------------
+P.dash=function(){var s=D.stats||{},box=h("div",{});
+ var kpi=function(v,l){return h("div",{className:"kpi"},h("b",{},String(v)),h("span",{},l))};
+ box.append(h("div",{className:"kpis"},
+   kpi(s.pending||0,"Orders awaiting approval"),kpi(s.awaiting_router||0,"Approved, not yet on router"),
+   kpi(s.active||0,"Activated"),kpi(s.vouchers_unused||0,"Unused vouchers"),
+   kpi(money(s.revenue_today),"Paid today"),kpi(money(s.revenue_week),"Paid this week"),kpi(money(s.revenue_month),"Paid this month")));
+ var on=!!s.router_online;
+ box.append(h("div",{className:"card"},h("h2",{},"Router link"),
+  h("p",{className:on?"ok":"err"},h("span",{className:"dot",style:"background:"+(on?"#7fd6a4":"#ff9b8f")}),
+   on?"Router is syncing normally.":"The router has not synced recently. Approved orders will not activate."),
+  h("p",{className:"muted"},"Last sync: "+(s.router_last_seen?String(s.router_last_seen).slice(0,19).replace("T"," ")+" UTC":"never")),
+  s.router_token_bad?h("p",{className:"err"},"ROUTER_TOKEN looks wrong (too short, or it is the AKfy… deployment ID). Run rotateRouterToken() in Setup.gs and paste the new value into the router's sx-config script."):null,
+  s.salt_bad?h("p",{className:"err"},"OTP_SALT is too short. Run runFirstTimeSetup() in Setup.gs."):null,
+  btn("Run full check",async function(){var r=await api("adminDiag");if(!r.ok){flash(r.error,1);return}
+   var c=h("div",{className:"card"},h("h2",{},"Health check"),r.checks.map(function(x){return h("p",{className:x.ok?"ok":"err"},(x.ok?"\u2713 ":"\u2717 ")+x.name+(x.note&&!x.ok?" — "+x.note:""))}));
+   box.append(c)},1)));
+ var stuck=(D.orders||[]).filter(function(o){return o.status==="approved"&&Date.now()-new Date(o.created_at)>600000});
+ if(stuck.length)box.append(h("div",{className:"card"},h("p",{className:"warn"},stuck.length+" order(s) have been approved for over 10 minutes without the router picking them up. That is a router token or scheduler problem.")));
+ return box};
+
+// ---------------- Orders ----------------
+P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_id,status:s})};
+ var f=h("input",{placeholder:"Filter by order ID, username, MAC or phone"}),wrap=h("div",{});
+ var draw=function(){wrap.textContent="";var t=f.value.trim().toLowerCase();
+  var rows=D.orders.filter(function(o){return !t||[o.order_id,o.identifier,o.phone,o.plan_id,o.status].join(" ").toLowerCase().indexOf(t)>=0});
+  wrap.append(rows.length?table(["Date","Order","For","Type","Plan","Paid via","Phone","Status",""],rows.map(function(o){return h("tr",{},
+   h("td",{},String(o.created_at).slice(0,16).replace("T"," ")),h("td",{},o.order_id),h("td",{},o.identifier),h("td",{},o.id_type),h("td",{},o.plan_id),
+   h("td",{},o.paid_via||"bank"),h("td",{},h("a",{href:"tel:"+o.phone,style:"color:#f5a524"},o.phone)),h("td",{className:"s-"+o.status},o.status),
+   h("td",{},o.status==="requested"?[btn("Approve",function(){setO(o,"approved")},1),btn("Reject",function(){setO(o,"rejected")})]:
+     (o.status==="approved"||o.status==="activated")?btn("Revoke",function(){if(confirm("Remove "+o.identifier+" from the router?"))act("revokeAccess",{order_id:o.order_id})}):null))})):h("p",{className:"muted"},"Nothing matches."))};
+ f.oninput=draw;draw();
+ return h("div",{},h("p",{className:"muted"},"Approve an order after the bank transfer arrives. Online payments approve themselves. The router activates approved orders within about a minute."),
+  h("div",{className:"bar"},btn("Refresh",load),btn("Approve all pending",async function(){if(!confirm("Approve every order currently waiting?"))return;var r=await act("bulkOrders",{status:"approved"});if(r)flash("Approved "+r.count)},1)),f,wrap)};
+
+// ---------------- Vouchers ----------------
+P.vouchers=function(){var plans=D.plans.filter(function(p){return p.active}),
+ ps=sel(plans.map(function(p){return [p.plan_id,p.name+" — "+money(p.price)]}),plans[0]&&plans[0].plan_id),
+ cnt=h("input",{type:"number",value:10,min:1,max:200}),outbox=h("div",{});
+ var draw=function(){outbox.textContent="";if(!made)return;
+  var txt=made.codes.map(function(c){return c+"   "+made.plan+"   "+money(made.price)}).join("\n");
+  outbox.append(h("div",{className:"card"},h("h2",{},made.codes.length+" new vouchers — "+made.plan),
+   h("p",{className:"muted noprint"},"Each code is already live on the router. Print or copy them now; codes are also listed below."),
+   h("pre",{className:"codes"},txt),
+   h("div",{className:"noprint"},btn("Copy all",function(){navigator.clipboard.writeText(txt).then(function(){flash("Copied")},function(){flash("Copy failed",1)})}),
+    btn("Download CSV",function(){var csv="code,plan,price\n"+made.codes.map(function(c){return c+","+made.plan+","+made.price}).join("\n");
+     var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=made.batch+".csv";a.click()}),
+    btn("Print",function(){window.print()}),btn("Done",function(){made=null;render()}))))};
+ draw();
+ var list=D.vouchers||[];
+ return h("div",{},
+  h("div",{className:"card noprint"},h("h2",{},"Generate vouchers"),
+   h("label",{},"Plan",ps),h("label",{},"How many (1-200)",cnt),
+   btn("Generate",async function(){var r=await api("makeVouchers",{plan_id:ps.value,count:Number(cnt.value)});
+    if(!r.ok){flash("Failed: "+r.error,1);return}made=r;flash("Generated "+r.codes.length);await load()},1)),
+  outbox,
+  h("p",{className:"muted noprint"},"Customers enter a code on the Voucher PIN tab of the login page. Codes work once the router has synced (about a minute)."),
+  list.length?table(["Code","Plan","Status","Used by","Created","Batch",""],list.map(function(v){return h("tr",{},
+   h("td",{},v.code),h("td",{},v.plan_id),h("td",{className:"s-"+v.status},v.status),h("td",{},v.used_by||"-"),
+   h("td",{},String(v.created_at).slice(0,10)),h("td",{},v.batch||"-"),
+   h("td",{className:"noprint"},btn("Delete",function(){if(confirm("Delete voucher "+v.code+"? It stops working after the next sync."))act("updateVoucher",{op:"delete",code:v.code})})))})):h("p",{className:"muted"},"No vouchers yet."))};
+
+// ---------------- Plans ----------------
+P.plans=function(){var e=ed||{plan_id:"",name:"",price:"",validity:"1d",rate_limit:"2M/5M",shared_users:1,is_featured_on_login:true,active:true},f={};
+ var F=function(k,l,t){f[k]=h("input",{type:t||"text",value:e[k],disabled:k==="plan_id"&&!!ed});return h("label",{},l,f[k])};
+ var C=function(k,l){f[k]=h("input",{type:"checkbox",checked:!!e[k]});return h("label",{className:"chk"},f[k],l)};
+ return h("div",{},h("div",{className:"card"},h("h2",{},ed?"Edit plan":"New plan"),F("plan_id","Plan ID (letters, digits, underscore)"),F("name","Name"),F("price","Price (NGN)","number"),F("validity","Validity (for example 12h, 1d, 7d, 30d)"),F("rate_limit","Speed limit, upload/download (for example 2M/5M)"),F("shared_users","Devices allowed","number"),C("is_featured_on_login","Highlight on the login page"),C("active","Active"),
+  h("p",{className:"muted"},"Every active plan now appears on the login page. Highlighted plans show first; the rest sit behind \u201CShow all plans\u201D."),
+  btn("Save plan",function(){act("updatePlan",{op:"save",plan:{plan_id:f.plan_id.value.trim(),name:f.name.value.trim(),price:f.price.value,validity:f.validity.value.trim(),rate_limit:f.rate_limit.value.trim(),shared_users:f.shared_users.value,is_featured_on_login:f.is_featured_on_login.checked,active:f.active.checked}})},1),ed?btn("Cancel",function(){ed=null;render()}):null),
+  table(["Plan","Price","Validity","Speed","Devices","Highlighted","Active",""],D.plans.map(function(p){return h("tr",{},h("td",{},p.name+" ("+p.plan_id+")"),h("td",{},money(p.price)),h("td",{},p.validity),h("td",{},p.rate_limit),h("td",{},p.shared_users),h("td",{},p.is_featured_on_login?"Yes":"No"),h("td",{},p.active?"Yes":"No"),
+   h("td",{},btn("Edit",function(){ed=p;render()}),btn("Delete",function(){if(confirm("Delete plan "+p.plan_id+"?"))act("updatePlan",{op:"delete",plan:{plan_id:p.plan_id}})})))})))};
+
+// ---------------- Payments ----------------
+P.gateways=function(){var f={};return h("div",{},h("p",{className:"muted"},"Enable a gateway and save BOTH keys. Payments are verified on the server, so a customer cannot fake a success. Leave a secret key blank to keep the saved one."),
+ h("p",{className:"warn"},"The router must allow js.paystack.co, api.paystack.co, checkout.flutterwave.com and api.flutterwave.com in the hotspot walled garden, or the payment window never opens. The v8 router patch adds them."),
+ D.gateways.map(function(g){var x=f[g.gateway]={en:h("input",{type:"checkbox",checked:g.enabled}),pk:h("input",{value:g.public_key,placeholder:"Public key"}),sk:h("input",{type:"password",autocomplete:"off",placeholder:g.secret_set?"Secret key saved":"Secret key"})};
+  return h("div",{className:"card"},h("h2",{},g.gateway.charAt(0).toUpperCase()+g.gateway.slice(1)+(g.gateway==="monnify"?" (not wired up yet)":"")),h("label",{className:"chk"},x.en,"Enabled"),x.pk,x.sk)}),
+ btn("Save gateway keys",function(){var gw={};for(var k in f)gw[k]={enabled:f[k].en.checked,public_key:f[k].pk.value.trim(),secret_key:f[k].sk.value.trim()};act("saveGatewayKeys",{gateways:gw})},1))};
+
+// ---------------- Branding ----------------
+P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp number for orders (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details",1],["bank_template","WhatsApp bank request message. Use {plan}, {price} and {identifier}",1]],f={};
+ return h("div",{className:"card"},SF.map(function(x){f[x[0]]=h(x[2]?"textarea":"input",{value:D.settings[x[0]]||"",rows:3});return h("label",{},x[1],f[x[0]])}),
+  btn("Save",function(){var s={};SF.forEach(function(x){s[x[0]]=f[x[0]].value});act("saveSettings",{settings:s})},1))};
+
+// ---------------- Banners ----------------
+P.banners=function(){var e=ed||{id:"",image_url:"",link_url:"",sort:0},f={};
+ var F=function(k,l,t){f[k]=h("input",{type:t||"text",value:e[k]});return h("label",{},l,f[k])};
+ return h("div",{},h("div",{className:"card"},h("h2",{},ed?"Edit banner":"New banner"),F("image_url","Image URL (https)"),F("link_url","Click destination URL"),F("sort","Order (lowest first)","number"),
+  btn("Save banner",function(){act("updateBanners",{op:"save",banner:{id:e.id,image_url:f.image_url.value.trim(),link_url:f.link_url.value.trim(),sort:f.sort.value}})},1),ed?btn("Cancel",function(){ed=null;render()}):null),
+  D.banners.length?table(["Image","Link","Order",""],D.banners.map(function(b){return h("tr",{},h("td",{},h("img",{className:"th",src:b.image_url,alt:""})),h("td",{},b.link_url||"-"),h("td",{},b.sort),
+   h("td",{},btn("Edit",function(){ed=b;render()}),btn("Delete",function(){if(confirm("Delete this banner?"))act("updateBanners",{op:"delete",banner:{id:b.id}})})))})):h("p",{className:"muted"},"No banners yet."))};
+
+// ---------------- Whitelist ----------------
+P.wl=function(){var m=h("input",{placeholder:"MAC address (AA:BB:CC:DD:EE:FF)"}),n=h("input",{placeholder:"Note (whose device)"});
+ return h("div",{},h("p",{className:"muted"},"Whitelisted devices skip the login page entirely. The router refreshes this list every 5 minutes."),
+  h("div",{className:"card"},m,n,btn("Add device",function(){act("updateWhitelist",{op:"add",mac:m.value,note:n.value})},1)),
+  D.whitelist.length?table(["MAC","Note",""],D.whitelist.map(function(w){return h("tr",{},h("td",{},w.mac),h("td",{},w.note),h("td",{},btn("Remove",function(){act("updateWhitelist",{op:"remove",mac:w.mac})})))})):h("p",{className:"muted"},"No whitelisted devices."))};
+
+// ---------------- Activity log ----------------
+P.log=function(){var a=D.audit||[];
+ return h("div",{},h("p",{className:"muted"},"Every admin action and every automatic approval, newest first."),
+  a.length?table(["When","Who","Action","Detail"],a.map(function(x){return h("tr",{},h("td",{},String(x.at).slice(0,19).replace("T"," ")),h("td",{},x.who),h("td",{},x.action),h("td",{},x.detail))})):h("p",{className:"muted"},"Nothing logged yet."))};
+
+api("getSettings",null,true).then(function(r){if(r.ok)setFab(r.settings.whatsapp_phone)});
+if(T)load();else render();
+</script></body></html>

@@ -1,0 +1,4 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connected</title><link rel="stylesheet" href="sx.css"></head><body><main>
+<h1>You're online</h1><p class="muted">Welcome, $(username). Your session has started.</p>
+<a class="btn p" href="$(link-status)">View session</a><a class="btn" id="go" href="$(link-status)">Continue browsing</a></main>
+<script>var d="$(link-redirect)";if(d)document.getElementById("go").href=d;setTimeout(function(){location.href=d||"$(link-status)"},3000)</script></body></html>

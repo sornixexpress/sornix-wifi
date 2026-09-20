@@ -1,0 +1,24 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Check activation</title>
+<style>*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#0b1220;color:#e5e9f0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}main{max-width:900px;margin:auto;padding:16px 16px 90px}h1{font-size:1.4rem;margin:.4rem 0}h2{font-size:1.05rem;margin:.2rem 0 .6rem}.muted{color:#93a0b5}.err{color:#ff9b8f}.ok{color:#7fd6a4}.card{background:#141d30;border:1px solid #24304a;border-radius:10px;padding:14px;margin:10px 0}input,textarea,button,.btn{display:block;width:100%;margin:6px 0;padding:11px;border-radius:8px;border:1px solid #2c3a57;background:#0b1220;color:inherit;font:inherit;text-decoration:none;text-align:center}textarea{text-align:left}button.p,.btn.p{background:#f5a524;border-color:#f5a524;color:#1b1200;font-weight:700}.fab{position:fixed;right:16px;bottom:16px;width:56px;height:56px;border-radius:50%;background:#25d366;display:flex;align-items:center;justify-content:center;font-size:26px;text-decoration:none;box-shadow:0 3px 10px #0009} main{max-width:460px}</style></head><body><main>
+<h1>Check your activation</h1><p class="muted">Enter the order ID from your WhatsApp message. This page updates by itself.</p>
+<div class="card" id="in"><input id="oid" placeholder="Order ID, for example SX-1A2B3C4D" autocomplete="off"><button class="p" id="chk">Check status</button></div>
+<div class="card" id="st" hidden><h2 id="t"></h2><p id="d" class="muted"></p><a class="btn" id="wa" hidden target="_blank" rel="noopener">Contact support on WhatsApp</a></div>
+</main>
+<script>
+var API="/api",o=new URLSearchParams(location.search).get("order")||"",timer=null,tries=0,phone="",q=function(s){return document.querySelector(s)};
+var MSG={requested:["Waiting for payment confirmation","We have your order. The operator will confirm it once your transfer arrives."],
+ approved:["Payment confirmed","Your plan is being activated on the router. This takes about a minute."],
+ activated:["You are active","Reconnect to the Wi-Fi login page and choose Auto MAC, or sign in with your username."],
+ rejected:["Order not approved","The operator could not confirm this order. Contact support with your order ID."]};
+function show(t,d,c,w){q("#st").hidden=false;q("#t").textContent=t;q("#t").className=c||"";q("#d").textContent=d;var a=q("#wa");a.hidden=!(w&&phone);if(phone)a.href="https://wa.me/"+phone+"?text="+encodeURIComponent("Order "+o)}
+function poll(){clearTimeout(timer);if(document.hidden){timer=setTimeout(poll,3000);return}
+ fetch(API+"?action=getOrderStatus&order_id="+encodeURIComponent(o)).then(function(r){return r.json()}).then(function(r){
+  if(!r.ok){show("Order not found","Check the order ID in your WhatsApp message.","err",1);return}
+  var m=MSG[r.status]||["Status: "+r.status,""];show(m[0],m[1],r.status==="activated"?"ok":r.status==="rejected"?"err":"",r.status==="rejected");
+  if(r.status==="requested"||r.status==="approved"){if(++tries<600)timer=setTimeout(poll,3000);else show("Still waiting","This is taking longer than usual. Contact support with your order ID.","err",1)}
+ }).catch(function(){timer=setTimeout(poll,3000)})}
+function go(v){v=String(v||"").trim().toUpperCase();if(!/^SX-[0-9A-F]{8}$/.test(v)){show("Invalid order ID","Order IDs look like SX-1A2B3C4D.","err");return}o=v;tries=0;q("#oid").value=v;show("Checking…","");poll()}
+q("#chk").onclick=function(){go(q("#oid").value)};
+fetch(API+"?action=getSettings").then(function(r){return r.json()}).then(function(s){phone=String((s.settings||{}).whatsapp_phone||(s.settings||{}).support_phone||"").replace(/\D/g,"")}).catch(function(){});
+if(o)go(o);
+</script></body></html>

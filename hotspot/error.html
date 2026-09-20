@@ -1,0 +1,12 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in problem</title><link rel="stylesheet" href="sx.css"></head><body><main>
+<h1>We couldn't sign you in</h1><p class="err" id="m"></p><p class="muted" id="raw">$(error)</p>
+<a class="btn p" href="$(link-login)">Try again</a><a class="btn" id="wa" href="#" hidden>Contact support on WhatsApp</a></main>
+<script>
+var API="https://isp.sornix.com.ng/api",raw=document.getElementById("raw").textContent,e=raw.toLowerCase(),m="Something went wrong while signing in. Try again.";
+if(/invalid username|invalid password/.test(e))m="That voucher, username or password isn't valid. Check it and try again.";
+else if(/limit reached|expired/.test(e)&&/uptime|time|session/.test(e))m="Your plan has run out. Buy a new plan to reconnect.";
+else if(/simultaneous|already logged|shared/.test(e))m="This account is already in use on the maximum number of devices.";
+else if(/chap|challenge/.test(e))m="The sign-in handshake failed. Reload the page and try again.";
+document.getElementById("m").textContent=m;
+fetch(API+"?action=getSettings").then(function(r){return r.json()}).then(function(s){var p=String((s.settings||{}).whatsapp_phone||(s.settings||{}).support_phone||"").replace(/\D/g,"");if(p){var a=document.getElementById("wa");a.href="https://wa.me/"+p+"?text="+encodeURIComponent("Sign-in problem: "+raw);a.hidden=false}}).catch(function(){});
+</script></body></html>

@@ -1,0 +1,19 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Session status</title><link rel="stylesheet" href="sx.css"></head><body><main>
+<h1>Session status</h1><p class="muted">Signed in as $(username)</p>
+<div class="card"><div class="row"><span>IP address</span><b>$(ip)</b></div><div class="row"><span>MAC address</span><b>$(mac)</b></div><div class="row"><span>Time online</span><b>$(uptime)</b></div>
+<div class="row"><span>Time remaining</span><b id="left">$(session-time-left)</b></div><div class="row"><span>Downloaded</span><b>$(bytes-out-nice)</b></div><div class="row"><span>Uploaded</span><b>$(bytes-in-nice)</b></div></div>
+<h2>Speed test</h2><div class="card"><div class="row"><span>Latency</span><b id="lat">-</b></div><div class="row"><span>Download</span><b id="dl">-</b></div><div class="row"><span>Upload</span><b id="ul">-</b></div>
+<p class="muted">Uses about 6 MB of your data.</p><button class="p" id="st">Start test</button></div>
+<form action="$(link-logout)" method="post"><button>Disconnect</button></form></main>
+<script>
+var q=function(s){return document.querySelector(s)},busy=false,C="https://speed.cloudflare.com/__";
+if(!q("#left").textContent.trim())q("#left").textContent="Unlimited";
+setInterval(function(){if(!busy)location.reload()},30000);
+function t(){return performance.now()}
+q("#st").onclick=async function(){var b=this;busy=true;b.disabled=true;q("#lat").textContent=q("#dl").textContent=q("#ul").textContent="…";
+ try{var best=1e9;for(var i=0;i<5;i++){var s=t();await fetch(C+"down?bytes=0",{cache:"no-store"});best=Math.min(best,t()-s)}q("#lat").textContent=Math.round(best)+" ms";
+  var s=t(),r=await fetch(C+"down?bytes=5000000",{cache:"no-store"}),buf=await r.arrayBuffer();q("#dl").textContent=(buf.byteLength*8/1e6/((t()-s)/1000)).toFixed(1)+" Mbps";
+  s=t();await fetch(C+"up",{method:"POST",body:new Uint8Array(1e6)});q("#ul").textContent=(8/((t()-s)/1000)).toFixed(1)+" Mbps"
+ }catch(e){q("#dl").textContent="Test failed"}
+ busy=false;b.disabled=false;b.textContent="Run again"};
+</script></body></html>
