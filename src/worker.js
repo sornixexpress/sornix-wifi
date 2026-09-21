@@ -337,6 +337,7 @@ async function actAdminGetAll(db, env) {
   const lastSeen = rs ? +rs.value : 0;
   let sessions = []; try { sessions = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='active_sessions'"))?.value || "[]"); } catch { sessions = []; }
   if (!Array.isArray(sessions)) sessions = [];
+  let sms_balance = null; try { sms_balance = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='sms_balance'"))?.value || "null"); } catch { sms_balance = null; }
   const b = lagosBoundaries();
   const rev = async from => (await one(db, "SELECT COALESCE(SUM(COALESCE(o.amount_paid,p.price,0)),0) s FROM orders o LEFT JOIN plans p ON p.plan_id=o.plan_id WHERE o.paid_at IS NOT NULL AND o.paid_at>=?1", new Date(from).toISOString())).s;
   const stats = {
@@ -351,7 +352,7 @@ async function actAdminGetAll(db, env) {
     router_token_bad: !env.ROUTER_TOKEN || env.ROUTER_TOKEN.length < 16 || env.ROUTER_TOKEN.startsWith("AKfy"),
     salt_bad: !env.OTP_SALT || env.OTP_SALT.length < 8
   };
-  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, sessions, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
+  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, sessions, sms_balance, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
 }
 
 // live hotspot sessions + force logout (queued for the next router sync tick)
@@ -369,8 +370,22 @@ async function actAdminLogout(db, env, b, who) {
   return json({ ok: true });
 }
 
-async function actAdminTestSms(db, env, b, who) {
-  const phone = String(b.phone || "");
+// SmartSMS wallet balance (units) - https://developer.smartsmssolutions.com/ (GET /balance/)
+async function actAdminSmsBalance(db, env, b, who) {
+  const s = await getSettings(db);
+  const token = String(s.sms_token || "").trim();
+  if (!token) return err("sms_not_configured");
+  let bal = null;
+  try { bal = await fetch("https://app.smartsmssolutions.com/io/api/client/v1/balance/?token=" + encodeURIComponent(token)).then(x => x.json()); }
+  catch (e) { return err("sms_gateway_error"); }
+  const n = Number(bal);
+  if (!Number.isFinite(n)) return err("sms_gateway_error");
+  await run(db, "INSERT INTO router_state(key,value) VALUES('sms_balance',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ units: n, at: nowIso() }));
+  await audit(db, who, "smsBalance", String(n));
+  return json({ ok: true, units: n, at: nowIso() });
+}
+
+async function actAdminTestSms(db, env, b, who) {  const phone = String(b.phone || "");
   const s = await getSettings(db);
   const r = await sendSms(db, env, phone, (s.site_name || "Sornix WiFi") + ": test SMS - your SMS token works.", "test");
   await audit(db, who, "testSms", phone + " -> " + (r.ok ? "ok" : r.error));
@@ -833,6 +848,7 @@ export default {
               case "makeVouchers": return await actMakeVouchers(env.DB, env, b, who);
               case "adminLogout": return await actAdminLogout(env.DB, env, b, who);
               case "adminTestSms": return await actAdminTestSms(env.DB, env, b, who);
+              case "adminSmsBalance": return await actAdminSmsBalance(env.DB, env, b, who);
               case "updateVoucher": return await actUpdateVoucher(env.DB, b, who);
               case "updatePlan": return await actUpdatePlan(env.DB, b, who);
               case "saveGatewayKeys": return await actSaveGateways(env.DB, b, who);

@@ -172,3 +172,25 @@ curl -X POST --data "U TEST-CODE" "http://127.0.0.1:8787/router/sync?token=devto
 | Payment window never opens | walled garden missing `js.paystack.co` / `checkout.flutterwave.com` |
 | OTP never arrives | no mail provider configured → code is in `wrangler tail` / Cloudflare Logs; add Resend or Telegram secret |
 | Voucher "invalid" right after generate | wait one sync tick (≤25 s) |
+
+## 9. SMS, Telegram activity alerts and live sessions (SmartSMS Solutions)
+
+- **SMS provider:** SmartSMS Solutions API-x (`https://app.smartsmssolutions.com/io/api/client/v1/`).
+  The API-x token and Sender ID are stored in D1 `settings` (`sms_token`, `sms_sender`) and edited in
+  **admin → Payments → SMS notifications**. The token is never returned by the public `getSettings` action.
+  - Send: `POST /sms/` (form-data: token, sender, to, message, type=0, routing=3).
+  - Balance: `GET /balance/?token=…` — shown on **admin → Dashboard → SMS wallet** card (cached in
+    `router_state.sms_balance`, refresh button re-queries; low warning under 50 units).
+- **Customer SMS features (login page):**
+  - "Request bank details by SMS" replaces the old WhatsApp bank-details request
+    (`requestAccountSms`, rate-limited 5 per phone per 15 min, uses `settings.bank_details`).
+  - Opt-in checkbox "Notify me by SMS (+₦10)" adds `settings.sms_fee` to the Paystack/Flutterwave charge
+    (`orders.sms_notify`, `orders.sms_phone`); a receipt SMS is sent on verified online payment, or an
+    activation SMS when a bank-transfer order is approved (`orders.sms_sent` prevents duplicates).
+  - Templates: `sms_bank_template`, `sms_receipt_template`, `sms_active_template` (admin-editable).
+- **Telegram is the default channel for ALL activity:** new orders, payments, approvals, rejections,
+  bulk approvals, router activations, voucher first-use, voucher batches, revokes and force-logouts are
+  pushed to `TELEGRAM_CHAT_ID` via `TELEGRAM_BOT_TOKEN` (same secrets as admin OTP).
+- **Live sessions + force logout:** the router reports logged-in hotspot sessions every sync tick
+  (`router_state.active_sessions`); **admin → Active users** lists them and queues
+  `/ip hotspot active remove` commands in `router_state.pending_cmds`, drained into the next sync RSC.

@@ -55,6 +55,16 @@ P.dash=function(){var s=D.stats||{},box=h("div",{});
   btn("Run full check",async function(){var r=await api("adminDiag");if(!r.ok){flash(r.error,1);return}
    var c=h("div",{className:"card"},h("h2",{},"Health check"),r.checks.map(function(x){return h("p",{className:x.ok?"ok":"err"},(x.ok?"\u2713 ":"\u2717 ")+x.name+(x.note&&!x.ok?" — "+x.note:""))}));
    box.append(c)},1)));
+ var sbx=h("p",{className:"muted"}),cb=D.sms_balance;
+ function fmtU(n){return Number(n).toLocaleString(undefined,{maximumFractionDigits:2})+" unit(s) left \u2014 about "+Math.floor(Number(n))+" SMS page(s)"}
+ if(cb&&cb.units!=null){sbx.className=cb.units<50?"warn":"ok";sbx.textContent=fmtU(cb.units)+" (checked "+String(cb.at).slice(0,19).replace("T"," ")+" UTC)"}
+ else sbx.textContent="Not checked yet.";
+ var chk=function(){sbx.className="muted";sbx.textContent="Contacting SmartSMS…";api("adminSmsBalance").then(function(r){
+  if(!r.ok){sbx.className="err";sbx.textContent=r.error==="sms_not_configured"?"No SMS token saved yet. Add it in Payments \u2192 SMS notifications, then refresh.":"Could not read the balance ("+(r.error||"unknown")+") - check the token in Payments.";return}
+  sbx.className=r.units<50?"warn":"ok";sbx.textContent=fmtU(r.units)+" (checked "+String(r.at).slice(11,19)+" UTC)";if(r.units<50)sbx.textContent+=" \u2014 LOW: top up at app.smartsmssolutions.com"}).catch(function(){sbx.className="err";sbx.textContent="Network error while checking balance."})};
+ if(!cb)chk();
+ box.append(h("div",{className:"card"},h("h2",{},"SMS wallet (SmartSMS Solutions)"),sbx,
+  btn("Refresh balance",chk,1),h("p",{className:"muted"},"Prepaid SMS units. Every bank-details request, customer notification and test SMS spends units from this wallet.")));
  var stuck=(D.orders||[]).filter(function(o){return o.status==="approved"&&Date.now()-new Date(o.created_at)>600000});
  if(stuck.length)box.append(h("div",{className:"card"},h("p",{className:"warn"},stuck.length+" order(s) have been approved for over 10 minutes without the router picking them up. That is a router token or scheduler problem.")));
  return box};
