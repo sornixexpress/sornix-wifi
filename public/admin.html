@@ -28,7 +28,7 @@ async function load(){var r=await api("adminGetAll");if(r.ok){D=r;setFab(D.setti
 function out(){T=null;D=null;try{sessionStorage.removeItem("sxt")}catch(e){}render()}
 function loginView(){var em=h("input",{type:"email",placeholder:"Admin email",autocomplete:"username"}),otp=h("input",{inputMode:"numeric",maxLength:4,placeholder:"4-digit code",hidden:true}),m=h("p",{className:"muted"}),b=h("button",{className:"p"},"Send code");
  b.onclick=async function(){m.className="muted";
-  if(otp.hidden){m.textContent="Sending…";var r=await api("sendOtp",{email:em.value});if(r.ok){otp.hidden=false;em.disabled=true;b.textContent="Verify code";m.textContent="If this email is an admin, a code was sent. It lasts 5 minutes.";otp.focus()}else{m.className="err";m.textContent="Could not send. Try again."}}
+  if(otp.hidden){m.textContent="Sending…";var r=await api("sendOtp",{email:em.value});if(r.ok){otp.hidden=false;em.disabled=true;b.textContent="Verify code";m.textContent="If this email is an admin, a code was sent. It lasts 5 minutes.";otp.focus()}else{m.className="err";m.textContent=r.error==="too_many_attempts"?"Too many codes requested. Wait a few minutes, then try again.":"Could not send. Try again."}}
   else{var r2=await api("verifyOtp",{email:em.value,otp:otp.value});if(r2.ok){T=r2.token;try{sessionStorage.setItem("sxt",T)}catch(e){}load()}else{m.className="err";m.textContent="Wrong or expired code. Reload this page to request a new one."}}};
  return h("div",{className:"card"},h("h2",{},"Admin sign in"),em,otp,b,m)}
 var TABS=[["dash","Dashboard"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};

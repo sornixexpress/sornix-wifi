@@ -193,7 +193,7 @@ async function actSendOtp(db, env, b) {
   const email = String(b.email || "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ ok: true }); // do not leak the admin list
   const row = await one(db, "SELECT * FROM otp WHERE email=?1", email);
-  if (row && row.sends >= 5 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts");
+  if (row && row.sends >= 10 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts");
   if (!adminEmails(env).includes(email)) return json({ ok: true });
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, "0");
   await run(db, "INSERT INTO otp(email,code_hash,expires_at,attempts,sends,sent_at) VALUES(?1,?2,?3,0,?4,?5) ON CONFLICT(email) DO UPDATE SET code_hash=?2,expires_at=?3,attempts=0,sends=sends+1,sent_at=?5",
