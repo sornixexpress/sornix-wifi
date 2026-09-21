@@ -214,3 +214,14 @@ or loses the captive-portal page mid-checkout.
   secret hash you choose into admin → Payments.
 - NOTE: online verification (client and webhook) requires the gateway SECRET keys saved in admin →
   Payments. With an empty secret key the portal hides "Pay online now" and webhooks answer 400.
+
+## 11. WiFi visibility and remote WiFi configuration
+
+- The sync report now includes `W` lines (associated wireless stations: MAC, signal, uptime),
+  `L` lines (bound DHCP leases: MAC, IP, hostname) and a `G` line (current SSID, frequency and
+  whether a WPA2 key is set on the profile the AP actually uses - the key itself never leaves the router).
+  **admin → WiFi** shows three groups: logged-in sessions, devices on the WiFi NOT logged in, and
+  devices holding an IP NOT logged in.
+- **admin → WiFi → WiFi details** changes SSID, WPA2 password and channel (2412-2484 MHz) remotely:
+  commands are queued in `router_state.pending_cmds` and applied by the router on the next sync tick
+  (~25 s). The password lives in the queue only until drained; audit stores "psk=changed".

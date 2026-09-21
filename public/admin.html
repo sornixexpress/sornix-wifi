@@ -33,7 +33,7 @@ function loginView(){var em=h("input",{type:"email",placeholder:"Admin email",au
   if(otp.hidden){m.textContent="Sending…";var r=await api("sendOtp",{email:em.value});if(r.ok){otp.hidden=false;em.disabled=true;b.textContent="Verify code";m.textContent="If this email is an admin, a code was sent. It lasts 5 minutes.";otp.focus()}else{m.className="err";m.textContent=r.error==="too_many_attempts"?"Too many codes requested. Wait a few minutes, then try again.":"Could not send. Try again."}}
   else{var r2=await api("verifyOtp",{email:em.value,otp:otp.value});if(r2.ok){T=r2.token;try{sessionStorage.setItem("sxt",T)}catch(e){}load()}else{m.className="err";m.textContent="Wrong or expired code. Reload this page to request a new one."}}};
  return h("div",{className:"card"},h("h2",{},"Admin sign in"),em,otp,b,m)}
-var TABS=[["dash","Dashboard"],["sessions","Active users"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};
+var TABS=[["dash","Dashboard"],["sessions","Active users"],["wifi","WiFi"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};
 function render(){var m=q("#app");m.textContent="";if(!T){m.append(loginView());return}if(!D){m.append(h("p",{className:"muted"},"Loading…"));return}
  m.append(h("div",{className:"bar noprint"},h("h1",{},(D.settings.site_name||"Sornix")+" admin"),h("button",{on:{click:out}},"Sign out")),
   h("div",{className:"tabs noprint"},TABS.map(function(t){return h("button",{className:t[0]===tab?"on":"",on:{click:function(){tab=t[0];ed=null;render()}}},t[1])})),P[tab]())}
@@ -85,6 +85,35 @@ P.sessions=function(){var ss=D.sessions||[];
   h("td",{},btn("Force logout",function(){if(confirm("Disconnect "+x.user+" now?"))act("adminLogout",{user:x.user})})))};
  return h("div",{},h("p",{className:"muted"},"Everyone logged into the hotspot right now, as reported by the router every sync (about 25 seconds). Force logout disconnects the session at the next sync; the customer can log in again while their plan or voucher is still valid."),
   ss.length?table(["User","MAC","Since (UTC)","Type",""],ss.map(row)):h("p",{className:"muted"},"Nobody is online right now."))};
+
+// ---------------- WiFi ----------------
+P.wifi=function(){var wc=D.wifi_clients||{},info=D.wifi_info||{},sess=D.sessions||[];
+ var logged={};sess.forEach(function(s){if(s.mac)logged[s.mac]=s.user});
+ var st=(wc.stations||[]).filter(function(x){return x.mac&&!logged[x.mac]});
+ var ls=(wc.leases||[]).filter(function(x){return x.mac&&!logged[x.mac]});
+ var f={ssid:h("input",{value:info.ssid||"",maxLength:32,placeholder:"Network name (SSID)"}),
+  psk:h("input",{type:"password",autocomplete:"new-password",placeholder:"New WPA2 password (8-63 chars). Leave blank to keep the current one"}),
+  freq:h("input",{type:"number",value:info.freq||2437,min:2412,max:2484,step:1})};
+ var ch=function(mhz){var c=Math.round((mhz-2407)/5);return c>=1&&c<=14?("channel "+c):""};
+ return h("div",{},
+  h("div",{className:"card"},h("h2",{},"Connected clients (live from the router)"),
+   h("p",{className:"muted"},"Refreshed every sync (about 25 s). \u201CNot logged in\u201D means the device is on the WiFi or has an IP but has not passed the login page yet \u2014 typically someone standing on the captive portal."),
+   h("h3",{},"Logged in ("+sess.length+")"),
+   sess.length?table(["User","MAC","Since (UTC)"],sess.map(function(x){return h("tr",{},h("td",{},x.user),h("td",{},x.mac||"-"),h("td",{},String(x.at||"").slice(11,19)))})):h("p",{className:"muted"},"Nobody logged in."),
+   h("h3",{},"On the WiFi, NOT logged in ("+st.length+")"),
+   st.length?table(["MAC","Signal","Associated for"],st.map(function(x){return h("tr",{},h("td",{},x.mac),h("td",{},x.signal||"-"),h("td",{},x.uptime||"-"))})):h("p",{className:"muted"},"No unauthenticated stations associated right now."),
+   h("h3",{},"Holding an IP, NOT logged in ("+ls.length+")"),
+   ls.length?table(["MAC","IP address","Device name"],ls.map(function(x){return h("tr",{},h("td",{},x.mac),h("td",{},x.ip||"-"),h("td",{},x.host||"-"))})):h("p",{className:"muted"},"No unauthenticated DHCP leases right now.")),
+  h("div",{className:"card"},h("h2",{},"WiFi details"),
+   h("p",{className:"muted"},"Current on the router: "+(info.ssid||"unknown")+" @ "+(info.freq||"?")+" MHz "+(ch(info.freq)?"("+ch(info.freq)+")":"")+" \u00B7 WPA2 password: "+(info.psk?"set":"NOT set")+". Changes are applied by the router at the next sync (about 25 s). Changing the channel or password disconnects everyone briefly \u2014 they rejoin with the new details."),
+   h("label",{},"Network name (SSID, max 32 chars)",f.ssid),
+   h("label",{},"WPA2 password",f.psk),
+   h("label",{},"Frequency (MHz, 2412-2484 = channels 1-14)",f.freq),
+   btn("Save WiFi details",function(){var ssid=f.ssid.value.trim();
+    if(!ssid){flash("SSID cannot be empty",1);return}
+    if(f.psk.value&&(f.psk.value.length<8||f.psk.value.length>63)){flash("Password must be 8-63 characters",1);return}
+    act("adminWifiSet",{ssid:ssid,psk:f.psk.value,frequency:Number(f.freq.value)})},1),
+   h("p",{className:"muted"},"The password travels to the router inside the token-protected sync queue and is deleted from it as soon as the router applies it (about 25 s); audit logs record only \u201Cpsk=changed\u201D, never the value.")))};
 
 // ---------------- Orders ----------------
 P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_id,status:s})};

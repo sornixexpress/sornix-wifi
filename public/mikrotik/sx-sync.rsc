@@ -38,6 +38,27 @@
 :foreach b in=[/ip hotspot ip-binding find where comment="sx"] do={
   :set $rep ($rep . "B " . [/ip hotspot ip-binding get $b mac-address] . "\n")
 }
+# W = associated wireless stations (on the WiFi, logged in or not)
+:do {
+  :foreach r in=[/interface wireless registration-table find] do={
+    :set $rep ($rep . "W " . [/interface wireless registration-table get $r mac-address] . " " . [/interface wireless registration-table get $r signal-strength] . " " . [/interface wireless registration-table get $r uptime] . "\n")
+  }
+} on-error={ }
+# L = bound DHCP leases (have an IP, logged in or not)
+:do {
+  :foreach l in=[/ip dhcp-server lease find where status="bound"] do={
+    :set $rep ($rep . "L " . [/ip dhcp-server lease get $l mac-address] . " " . [/ip dhcp-server lease get $l address] . " " . [/ip dhcp-server lease get $l host-name] . "\n")
+  }
+} on-error={ }
+# G = current WiFi identity (ssid, frequency, psk-set flag) - never the key itself
+:do {
+  :local wi [/interface wireless find where mode="ap-bridge" and disabled=no]
+  :if ([:len $wi] > 0) do={
+    :local w0 ($wi->0)
+    :local sp [/interface wireless get $w0 security-profile]
+    :set $rep ($rep . "G " . [/interface wireless get $w0 ssid] . " " . [/interface wireless get $w0 frequency] . " " . ([:len [/interface wireless security-profiles get [find where name=$sp] wpa2-pre-shared-key]] > 0) . "\n")
+  }
+} on-error={ }
 :set $rep ($rep . "V " . [/system resource get version] . " " . [/system identity get name] . "\n")
 # N = total hotspot users + names of users NOT tagged comment=sx (orphan visibility)
 :local nx ""

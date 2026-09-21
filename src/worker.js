@@ -389,6 +389,8 @@ async function actAdminGetAll(db, env) {
   let sessions = []; try { sessions = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='active_sessions'"))?.value || "[]"); } catch { sessions = []; }
   if (!Array.isArray(sessions)) sessions = [];
   let sms_balance = null; try { sms_balance = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='sms_balance'"))?.value || "null"); } catch { sms_balance = null; }
+  let wifi_clients = { stations: [], leases: [], at: null }; try { wifi_clients = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='wifi_clients'"))?.value || "null") || wifi_clients; } catch { }
+  let wifi_info = null; try { wifi_info = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='wifi_info'"))?.value || "null"); } catch { wifi_info = null; }
   const b = lagosBoundaries();
   const rev = async from => (await one(db, "SELECT COALESCE(SUM(COALESCE(o.amount_paid,p.price,0)),0) s FROM orders o LEFT JOIN plans p ON p.plan_id=o.plan_id WHERE o.paid_at IS NOT NULL AND o.paid_at>=?1", new Date(from).toISOString())).s;
   const stats = {
@@ -403,7 +405,7 @@ async function actAdminGetAll(db, env) {
     router_token_bad: !env.ROUTER_TOKEN || env.ROUTER_TOKEN.length < 16 || env.ROUTER_TOKEN.startsWith("AKfy"),
     salt_bad: !env.OTP_SALT || env.OTP_SALT.length < 8
   };
-  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, sessions, sms_balance, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
+  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, sessions, sms_balance, wifi_clients, wifi_info, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
 }
 
 // live hotspot sessions + force logout (queued for the next router sync tick)
@@ -434,6 +436,39 @@ async function actAdminSmsBalance(db, env, b, who) {
   await run(db, "INSERT INTO router_state(key,value) VALUES('sms_balance',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ units: n, at: nowIso() }));
   await audit(db, who, "smsBalance", String(n));
   return json({ ok: true, units: n, at: nowIso() });
+}
+
+// change basic WiFi details (SSID / WPA2 key / channel) - queued for the next router sync
+async function actAdminWifiSet(db, env, b, who) {
+  const ssid = String(b.ssid || "").trim();
+  const psk = String(b.psk || "");
+  const freq = Math.round(Number(b.frequency));
+  const cmds = [], parts = [];
+  if (ssid) {
+    if (ssid.length > 32) return err("invalid_ssid");
+    cmds.push('/interface wireless set [find where mode="ap-bridge" and disabled=no] ssid="' + esc(ssid) + '"');
+    parts.push("ssid=" + ssid);
+  }
+  if (psk) {
+    if (psk.length < 8 || psk.length > 63) return err("invalid_psk");
+    const keyCmd = ' mode=dynamic-keys authentication-types=wpa2-psk wpa2-pre-shared-key="' + esc(psk) + '"';
+    cmds.push('/interface wireless security-profiles set [find where default=yes]' + keyCmd);
+    cmds.push('/interface wireless security-profiles set [find where name=[/interface wireless get [find where mode="ap-bridge" and disabled=no] security-profile]]' + keyCmd);
+    parts.push("psk=changed");
+  }
+  if (Number.isFinite(freq) && freq >= 2412 && freq <= 2484) {
+    cmds.push('/interface wireless set [find where mode="ap-bridge" and disabled=no] frequency=' + freq + ' band=b/g/n');
+    parts.push("freq=" + freq);
+  }
+  if (!cmds.length) return err("nothing_to_change");
+  const row = await one(db, "SELECT value FROM router_state WHERE key='pending_cmds'");
+  let pc = []; try { pc = JSON.parse(row ? row.value : "[]"); } catch { pc = []; }
+  if (!Array.isArray(pc)) pc = [];
+  pc.push(...cmds);
+  await run(db, "INSERT INTO router_state(key,value) VALUES('pending_cmds',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(pc));
+  await audit(db, who, "wifiSet", parts.join(" "));
+  notify(env, "\u{1F4F6} WiFi change queued by " + who + ": " + parts.join(", "));
+  return json({ ok: true, queued: cmds.length });
 }
 
 async function actAdminTestSms(db, env, b, who) {  const phone = String(b.phone || "");
@@ -599,16 +634,19 @@ async function actDiag(db, env) {
 
 // ---------------------------------------------------------------- router sync
 function parseReport(text) {
-  const users = [], active = [], bypass = []; let version = "", nline = "";
+  const users = [], active = [], bypass = [], stations = [], leases = []; let version = "", nline = ""; let g = null;
   String(text || "").split("\n").forEach(line => {
     const p = line.trim().split(/\s+/);
     if (p[0] === "U" && p[1]) users.push(p[1]);
     else if (p[0] === "A" && p[1]) active.push({ user: p[1], mac: normMac(p[2]) || p[2] });
     else if (p[0] === "B" && p[1]) bypass.push(normMac(p[1]) || p[1]);
+    else if (p[0] === "W" && p[1]) stations.push({ mac: normMac(p[1]) || p[1], signal: p[2] || "", uptime: p.slice(3).join(" ") });
+    else if (p[0] === "L" && p[1]) leases.push({ mac: normMac(p[1]) || p[1], ip: p[2] || "", host: p.slice(3).join(" ") });
+    else if (p[0] === "G" && p.length >= 3) g = { ssid: p.slice(1, -2).join(" "), freq: p[p.length - 2], psk: p[p.length - 1] === "true", at: nowIso() };
     else if (p[0] === "V") version = p.slice(1).join(" ");
     else if (p[0] === "N") nline = p.slice(1).join(" ");
   });
-  return { users, active, bypass, version, nline };
+  return { users, active, bypass, version, nline, stations, leases, g };
 }
 
 async function routerSync(db, env, req) {
@@ -620,6 +658,8 @@ async function routerSync(db, env, req) {
   await run(db, "INSERT INTO router_state(key,value) VALUES('last_seen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", String(nowMs()));
   await run(db, "INSERT INTO router_state(key,value) VALUES('version',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.version || "unknown");
   await run(db, "INSERT INTO router_state(key,value) VALUES('active_sessions',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.active.map(a => ({ user: a.user, mac: a.mac, at: t }))));
+  await run(db, "INSERT INTO router_state(key,value) VALUES('wifi_clients',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ stations: rep.stations, leases: rep.leases, at: t }));
+  if (rep.g) await run(db, "INSERT INTO router_state(key,value) VALUES('wifi_info',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.g));
 
   const haveU = new Set(rep.users), haveB = new Set(rep.bypass);
 
@@ -901,6 +941,7 @@ export default {
               case "adminLogout": return await actAdminLogout(env.DB, env, b, who);
               case "adminTestSms": return await actAdminTestSms(env.DB, env, b, who);
               case "adminSmsBalance": return await actAdminSmsBalance(env.DB, env, b, who);
+              case "adminWifiSet": return await actAdminWifiSet(env.DB, env, b, who);
               case "updateVoucher": return await actUpdateVoucher(env.DB, b, who);
               case "updatePlan": return await actUpdatePlan(env.DB, b, who);
               case "saveGatewayKeys": return await actSaveGateways(env.DB, b, who);
