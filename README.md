@@ -225,3 +225,15 @@ or loses the captive-portal page mid-checkout.
 - **admin → WiFi → WiFi details** changes SSID, WPA2 password and channel (2412-2484 MHz) remotely:
   commands are queued in `router_state.pending_cmds` and applied by the router on the next sync tick
   (~25 s). The password lives in the queue only until drained; audit stores "psk=changed".
+
+## 12. Voucher usage history
+
+- Tables `voucher_events` (created / first_login / expired / deleted, with MAC or actor in `detail`)
+  and `voucher_sessions` (per code+MAC first_seen / last_seen, upserted every sync tick while the
+  device is online).
+- **verify.html → "Voucher PIN" tab** (public): status chip (UNUSED / ACTIVE NOW / USED / EXHAUSTED /
+  DELETED), plan, first login, valid-until, masked device list (`AA:BB:**:**:**:CC`) and event list.
+- **admin → Vouchers → "Voucher list & usage history"**: filters for Unused, Used-but-still-within-
+  validity, Exhausted, Online right now, Deleted; a computed State column; per-row **History** button
+  showing unmasked device sessions and all events (`adminVoucherHistory`).
+- Used vouchers past `expires_at` are swept to status `expired` (= exhausted) by the router sync loop.

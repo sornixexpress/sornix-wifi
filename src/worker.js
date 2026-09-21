@@ -224,6 +224,35 @@ async function actOrderStatus(db, id) {
   return json({ ok: true, status: o.status });
 }
 
+function maskMac(m) { const p = String(m || "").split(":"); return p.length === 6 ? [p[0], p[1], "**", "**", "**", p[5]].join(":") : (m || ""); }
+
+// public: voucher PIN status + usage history (devices masked)
+async function actVoucherStatus(db, code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!/^[A-Z0-9-]{4,20}$/.test(c)) return err("invalid_code");
+  const v = await one(db, "SELECT * FROM vouchers WHERE code=?1", c);
+  if (!v) return err("not_found");
+  const plan = await one(db, "SELECT name,validity,rate_limit,price FROM plans WHERE plan_id=?1", v.plan_id);
+  const sessions = await q(db, "SELECT mac,first_seen,last_seen FROM voucher_sessions WHERE code=?1 ORDER BY first_seen", c);
+  const events = await q(db, "SELECT at,event FROM voucher_events WHERE code=?1 ORDER BY id", c);
+  let activeNow = false;
+  try { const rs = await one(db, "SELECT value FROM router_state WHERE key='active_sessions'"); const list = JSON.parse(rs ? rs.value : "[]"); activeNow = Array.isArray(list) && list.some(s => s.user === c); } catch (e) { }
+  return json({
+    ok: true, code: c, status: v.status, plan: plan ? plan.name : v.plan_id, price: plan ? plan.price : null, validity: plan ? plan.validity : null,
+    created_at: v.created_at, used_at: v.used_at, expires_at: v.expires_at, active_now: activeNow,
+    devices: sessions.map(s => ({ mac: maskMac(s.mac), first_seen: s.first_seen, last_seen: s.last_seen })),
+    events: events
+  });
+}
+
+// admin: full unmasked usage history for one voucher
+async function actAdminVoucherHistory(db, b, who) {
+  const c = String(b.code || "").trim().toUpperCase();
+  const sessions = await q(db, "SELECT mac,first_seen,last_seen FROM voucher_sessions WHERE code=?1 ORDER BY first_seen", c);
+  const events = await q(db, "SELECT at,event,detail FROM voucher_events WHERE code=?1 ORDER BY id", c);
+  return json({ ok: true, code: c, sessions, events });
+}
+
 async function actCreateOrder(db, b) {
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
   if (!plan) return err("invalid_plan");
@@ -520,6 +549,7 @@ async function actMakeVouchers(db, env, b, who) {
     codes.push(c);
   }
   const stmts = codes.map(c => db.prepare("INSERT INTO vouchers(code,plan_id,status,batch,created_at) VALUES(?1,?2,'new',?3,?4)").bind(c, plan.plan_id, batch, nowIso()));
+  codes.forEach(c => stmts.push(db.prepare("INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'created',?3)").bind(c, nowIso(), batch)));
   await db.batch(stmts);
   await audit(db, who, "makeVouchers", count + " x " + plan.plan_id + " batch " + batch);
   notify(env, "\u{1F39F} " + codes.length + " vouchers created for " + plan.name + " (batch " + batch + ") by " + who);
@@ -531,6 +561,7 @@ async function actUpdateVoucher(db, b, who) {
   const v = await one(db, "SELECT * FROM vouchers WHERE code=?1", String(b.code || "").toUpperCase());
   if (!v) return err("not_found");
   await run(db, "UPDATE vouchers SET status='deleted' WHERE code=?1", v.code);
+  await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'deleted',?3)", v.code, nowIso(), who);
   await audit(db, who, "deleteVoucher", v.code);
   return json({ ok: true });
 }
@@ -669,9 +700,18 @@ async function routerSync(db, env, req) {
     if (v) {
       const plan = await one(db, "SELECT validity FROM plans WHERE plan_id=?1", v.plan_id);
       await run(db, "UPDATE vouchers SET status='used',used_by=?1,used_at=?2,expires_at=?3 WHERE code=?4", a.mac, t, addValidity(t, plan ? plan.validity : "1d"), v.code);
+      await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'first_login',?3)", v.code, t, a.mac);
       await audit(db, "router", "voucherUsed", v.code + " by " + a.mac);
       notify(env, "\u{1F39F} Voucher " + v.code + " just logged in (" + a.mac + ")");
     }
+    // usage history: track every device session per voucher
+    const vc = await one(db, "SELECT code FROM vouchers WHERE code=?1", a.user);
+    if (vc) await run(db, "INSERT INTO voucher_sessions(code,mac,first_seen,last_seen) VALUES(?1,?2,?3,?3) ON CONFLICT(code,mac) DO UPDATE SET last_seen=?3", vc.code, a.mac || "", t);
+  }
+  // expired sweep: used vouchers past their validity become 'expired' (exhausted)
+  for (const v of await q(db, "SELECT code FROM vouchers WHERE status='used' AND expires_at IS NOT NULL AND expires_at<=?1", t)) {
+    await run(db, "UPDATE vouchers SET status='expired' WHERE code=?1", v.code);
+    await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'expired','')", v.code, t);
   }
   // 2. approved orders present on router -> activated
   for (const name of rep.users) {
@@ -942,6 +982,7 @@ export default {
               case "adminTestSms": return await actAdminTestSms(env.DB, env, b, who);
               case "adminSmsBalance": return await actAdminSmsBalance(env.DB, env, b, who);
               case "adminWifiSet": return await actAdminWifiSet(env.DB, env, b, who);
+              case "adminVoucherHistory": return await actAdminVoucherHistory(env.DB, b, who);
               case "updateVoucher": return await actUpdateVoucher(env.DB, b, who);
               case "updatePlan": return await actUpdatePlan(env.DB, b, who);
               case "saveGatewayKeys": return await actSaveGateways(env.DB, b, who);
@@ -962,6 +1003,7 @@ export default {
         if (action === "getPlans") return await actGetPlans(env.DB);
         if (action === "checkUsername") return await actCheckUsername(env.DB, url.searchParams.get("u"));
         if (action === "getOrderStatus") return await actOrderStatus(env.DB, url.searchParams.get("order_id"));
+        if (action === "getVoucherStatus") return await actVoucherStatus(env.DB, url.searchParams.get("code"));
         return err("unknown_action");
       }
       // static assets (admin.html, verify.html)

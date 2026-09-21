@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS vouchers (
 );
 CREATE INDEX IF NOT EXISTS idx_vouch_status ON vouchers(status);
 
+CREATE TABLE IF NOT EXISTS voucher_events (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  code   TEXT NOT NULL,
+  at     TEXT NOT NULL,
+  event  TEXT NOT NULL,          -- created | first_login | expired | deleted
+  detail TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ve_code ON voucher_events(code);
+
+CREATE TABLE IF NOT EXISTS voucher_sessions (
+  code       TEXT NOT NULL,
+  mac        TEXT NOT NULL,
+  first_seen TEXT NOT NULL,
+  last_seen  TEXT NOT NULL,
+  PRIMARY KEY (code, mac)
+);
+
 CREATE TABLE IF NOT EXISTS whitelist (
   mac        TEXT PRIMARY KEY,
   note       TEXT DEFAULT '',
