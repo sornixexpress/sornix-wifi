@@ -136,7 +136,7 @@ P.plans=function(){var e=ed||{plan_id:"",name:"",price:"",validity:"1d",rate_lim
    h("td",{},btn("Edit",function(){ed=p;render()}),btn("Delete",function(){if(confirm("Delete plan "+p.plan_id+"?"))act("updatePlan",{op:"delete",plan:{plan_id:p.plan_id}})})))})))};
 
 // ---------------- Payments ----------------
-P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"off",value:D.settings.sms_token||"",placeholder:"Paste API-x token"}),sd:h("input",{value:D.settings.sms_sender||"Sornix"}),fee:h("input",{type:"number",value:D.settings.sms_fee||10,min:0}),bt:h("textarea",{rows:2},D.settings.sms_bank_template||""),rt:h("textarea",{rows:2},D.settings.sms_receipt_template||""),at:h("textarea",{rows:2},D.settings.sms_active_template||""),tp:h("input",{placeholder:"08031234567"}),wh:h("input",{type:"password",autocomplete:"off",value:D.settings.flw_webhook_hash||"",placeholder:"Webhook secret hash"})};
+P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"off",value:D.settings.sms_token||"",placeholder:"Paste API-x token"}),sd:h("input",{value:D.settings.sms_sender||"Sornix"}),fee:h("input",{type:"number",value:D.settings.sms_fee||10,min:0}),bt:h("textarea",{rows:2},D.settings.sms_bank_template||""),tp:h("input",{placeholder:"08031234567"}),wh:h("input",{type:"password",autocomplete:"off",value:D.settings.flw_webhook_hash||"",placeholder:"Webhook secret hash"})};
  return h("div",{},h("p",{className:"muted"},"Enable a gateway and save BOTH keys. Payments are verified on the server, so a customer cannot fake a success. Leave a secret key blank to keep the saved one."),
  h("p",{className:"warn"},"The router must allow js.paystack.co, api.paystack.co, checkout.flutterwave.com and api.flutterwave.com in the hotspot walled garden, or the payment window never opens. The v8 router patch adds them."),
  D.gateways.map(function(g){var x=f[g.gateway]={en:h("input",{type:"checkbox",checked:g.enabled}),pk:h("input",{value:g.public_key,placeholder:"Public key"}),sk:h("input",{type:"password",autocomplete:"off",placeholder:g.secret_set?"Secret key saved":"Secret key"})};
@@ -152,9 +152,7 @@ P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"o
   h("p",{className:"muted"},"Customers can request your bank account number by SMS on the login page, and opt into SMS order notifications for a \u20A6"+(D.settings.sms_fee||10)+" charge added to their payment. Create an API-x token at app.smartsmssolutions.com (Developer \u2192 API tokens) and paste it here. Business activity alerts also go to your Telegram automatically."),
   h("label",{},"API-x token",sf.tk),h("label",{},"Sender ID (exactly as approved on SmartSMS)",sf.sd),h("label",{},"SMS charge when customer opts in (NGN)",sf.fee),
   h("label",{},"Bank-details SMS template. Tokens: {site} {bank_details} {support}",sf.bt),
-  h("label",{},"Receipt SMS template (online payment). Tokens: {site} {amount} {plan} {identifier} {validity} {order} {support}",sf.rt),
-  h("label",{},"Activation SMS template (bank transfer approved). Same tokens",sf.at),
-  btn("Save SMS settings",function(){act("saveSettings",{settings:{sms_token:sf.tk.value.trim(),sms_sender:sf.sd.value.trim(),sms_fee:sf.fee.value,sms_bank_template:sf.bt.value,sms_receipt_template:sf.rt.value,sms_active_template:sf.at.value}})},1),
+  btn("Save SMS settings",function(){act("saveSettings",{settings:{sms_token:sf.tk.value.trim(),sms_sender:sf.sd.value.trim(),sms_fee:sf.fee.value,sms_bank_template:sf.bt.value}})},1),
   h("label",{},"Test number",sf.tp),
   btn("Send test SMS",async function(){var r=await api("adminTestSms",{phone:sf.tp.value.trim()});flash(r.ok?"Test SMS sent":"Failed: "+(r.error||"unknown"),!r.ok)})))};
 

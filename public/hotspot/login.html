@@ -24,7 +24,7 @@ $(if error)<p class="err">$(error)</p>$(endif)
 <p class="muted" id="ototal" hidden></p>
 <p id="omsg" class="err"></p>
 <button class="p" id="paynow" hidden>Pay online now</button>
-<button id="go">Request bank details by SMS</button>
+<button id="go">Request bank details by SMS (&#8358;10 fee)</button>
 <div id="done" hidden><a class="btn" id="dvf" target="_blank" rel="noopener">Check activation status</a></div>
 <button id="cx">Close</button></div></div>
 
@@ -97,12 +97,12 @@ function order(){var ph=q("#oph").value.trim(),body={action:"createOrder",plan_i
 
 q("#go").onclick=function(){var m=q("#omsg"),ph=q("#oph").value.trim();m.className="muted";m.textContent="Placing order and sending bank details by SMS…";
  if(!ph){m.className="err";m.textContent="Enter your phone number - the bank details are sent to it by SMS.";return}
- if(q("#smsn").checked&&!ph){m.className="err";m.textContent="Enter your phone number for SMS updates.";return}
+ q("#smsn").checked=true;drawTotal();
  order().then(function(r){
   if(!r.ok){m.className="err";m.textContent=msg(r.error);return}
   q("#dvf").href=VERIFY+"?order="+encodeURIComponent(r.order_id);
   return post({action:"requestAccountSms",phone:ph}).then(function(r2){
-   if(r2.ok){m.className="ok";m.textContent="Order "+r.order_id+" placed. Bank account details sent by SMS to your phone. Pay, then check status."}
+   if(r2.ok){m.className="ok";m.textContent="Order "+r.order_id+" placed. Bank account details sent by SMS to your phone. The \u20A610 SMS fee was added to your order total. Pay, then check status."}
    else{m.className="err";m.textContent=msg(r2.error)+" Your order "+r.order_id+" is still saved - you can pay online or check status."}
    q("#done").hidden=false;q("#go").hidden=true})
  }).catch(function(){m.className="err";m.textContent="Network error. Try again."})};
