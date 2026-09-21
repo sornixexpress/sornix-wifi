@@ -1,14 +1,15 @@
 # =============================================================
-#  Sornix Express WiFi - sync tick (runs every 25 s via scheduler)
-#  Winbox: System > Scripts > "+" name: sx-sync  -> paste this
+#  Sornix Express WiFi - sync tick (RouterOS 7.x syntax)
+#  Installed by the bootstrap; runs every 25 s via scheduler.
 #
-#  What it does each tick:
-#   1. builds a small report of sx-managed hotspot users, active
+#  Each tick:
+#   1. builds a report of sx-managed hotspot users, active
 #      sessions and bypass bindings
-#   2. POSTs it to the Worker  /router/sync?token=...
-#   3. saves the Worker reply (RouterOS commands) and /import s it
+#   2. POSTs it as http-data to the Worker /router/sync
+#      and captures the reply (RouterOS commands) with output=user
+#   3. writes the reply to sxcmd.rsc and /import s it
 #      -> vouchers, approved orders, renewals, revokes and the
-#         MAC whitelist are applied to the router automatically
+#         MAC whitelist are applied automatically
 # =============================================================
 
 :global sxBusy
@@ -17,7 +18,7 @@
 :set sxTick ($sxTick + 1)
 
 :if ($sxBusy = "1") do={
-  :if (($sxTick - $sxBusyTick) < 3) do={ :log info "sx-sync: previous run still active, skipping"; :return }
+  :if (($sxTick - $sxBusyTick) < 3) do={ :log info "sx-sync: previous run still active, skipping"; :return null }
   :log warning "sx-sync: clearing stale lock"
 }
 :set sxBusy "1"
@@ -25,7 +26,7 @@
 
 :local rep ""
 
-# sx-managed hotspot users (comment="sx" marks ours; anything you add by hand is untouched)
+# sx-managed hotspot users (comment="sx" marks ours; hand-made users untouched)
 :foreach u in=[/ip hotspot user find where comment="sx"] do={
   :set $rep ($rep . "U " . [/ip hotspot user get $u name] . "\n")
 }
@@ -39,12 +40,11 @@
 }
 :set $rep ($rep . "V " . [/system resource get version] . " " . [/system identity get name] . "\n")
 
-/file remove [find where name="sxrep.txt"]
-/file add name="sxrep.txt" contents=$rep
-/file remove [find where name="sxcmd.rsc"]
-
-:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post upload=yes src-path="sxrep.txt" dst-path="sxcmd.rsc" as-value]
+# v7-correct POST: body via http-data, reply captured via output=user
+:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post http-data=$rep as-value output=user]
 :if (($r->"status") = "finished") do={
+  /file remove [find where name="sxcmd.rsc"]
+  /file add name="sxcmd.rsc" contents=($r->"data")
   /import file-name="sxcmd.rsc"
   :log info "sx-sync: ok"
 } else={
