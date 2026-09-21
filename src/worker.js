@@ -174,6 +174,7 @@ async function seed(db) {
     sms_bank_template: "{site} bank transfer details: {bank_details} Quote your order ID when paying. Support: {support}",
     sms_receipt_template: "{site}: payment of NGN {amount} received for {plan}. Login: {identifier}, valid {validity}. Order {order}. Support: {support}",
     sms_active_template: "{site}: your {plan} plan is ACTIVE. Login: {identifier}, valid {validity}. Order {order}. Support: {support}",
+    voucher_slip_template: "========================================\n        SORNI UNLIMITED DATA          \n      High-Speed Interne      \n========================================\nBatch:              {batch}\n\nVoucher Pin:        {pin}\n\nAllocated Data/Time : {data_time}\nRate / Price        : \u20A6{price}\nStatus              : {status}\n\n----------------------------------------\n* Enter login details on the browser page.\n* Timer starts upon first login.\n* Unused time is non-refundable.\n========================================",
     logo_url: ""
   };
   const stmts = Object.entries(defs).map(([k, v]) => db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?1,?2)").bind(k, v));

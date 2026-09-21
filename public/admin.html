@@ -101,43 +101,44 @@ P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_i
   h("div",{className:"bar"},btn("Refresh",load),btn("Approve all pending",async function(){if(!confirm("Approve every order currently waiting?"))return;var r=await act("bulkOrders",{status:"approved"});if(r)flash("Approved "+r.count)},1)),f,wrap)};
 
 // ---------------- Vouchers ----------------
+var SLIP_DEF="========================================\n        SORNI UNLIMITED DATA          \n      High-Speed Interne      \n========================================\nBatch:              {batch}\n\nVoucher Pin:        {pin}\n\nAllocated Data/Time : {data_time}\nRate / Price        : \u20A6{price}\nStatus              : {status}\n\n----------------------------------------\n* Enter login details on the browser page.\n* Timer starts upon first login.\n* Unused time is non-refundable.\n========================================";
 P.vouchers=function(){var plans=D.plans.filter(function(p){return p.active}),
  ps=sel(plans.map(function(p){return [p.plan_id,p.name+" — "+money(p.price)]}),plans[0]&&plans[0].plan_id),
  cnt=h("input",{type:"number",value:10,min:1,max:200}),outbox=h("div",{});
- var slip=function(c){return ["========================================",
-  "        SORNI UNLIMITED DATA          ",
-  "      High-Speed Interne      ",
-  "========================================",
-  "Batch:              "+(made.batch||""),
-  "",
-  "Voucher Pin:        "+c,
-  "",
-  "Allocated Data/Time : "+(made.validity||"")+" \u00B7 "+(made.rate_limit||""),
-  "Rate / Price        : \u20A6"+made.price,
-  "Status              : Active      ",
-  "",
-  "----------------------------------------",
-  "* Enter login details on the browser page.",
-  "* Timer starts upon first login.",
-  "* Unused time is non-refundable.",
-  "========================================"].join("\n")};
- var draw=function(){outbox.textContent="";if(!made)return;
+ var slipText=function(v){var plan=D.plans.filter(function(p){return p.plan_id===v.plan_id})[0];
+  var map={"{batch}":v.batch||"","{pin}":v.code,"{plan}":plan?plan.name:"","{validity}":plan?plan.validity:"","{rate}":plan?plan.rate_limit:"","{data_time}":(plan?plan.validity:"")+" \u00B7 "+(plan?plan.rate_limit:""),"{price}":plan?plan.price:"","{status}":v.status==="new"?"Active":(String(v.status).charAt(0).toUpperCase()+String(v.status).slice(1)),"{site}":D.settings.site_name||""};
+  return String(D.settings.voucher_slip_template||SLIP_DEF).replace(/\{batch\}|\{pin\}|\{plan\}|\{validity\}|\{rate\}|\{data_time\}|\{price\}|\{status\}|\{site\}/g,function(m){return map[m]!=null?map[m]:m})};
+ var showSlips=function(list,title,extra){outbox.textContent="";if(!list.length){flash("No vouchers match that filter",1);return}
+  outbox.append(h("div",{className:"card"},h("h2",{},list.length+" slip(s) \u2014 "+title),
+   h("p",{className:"muted noprint"},"Preview below. Printing puts one slip per page \u2014 cut along the dashed lines."),
+   h("div",{},list.map(function(v){return h("pre",{className:"slip"},slipText(v))})),
+   h("div",{className:"noprint"},(extra||[]).concat([btn("Print",function(){window.print()},1),btn("Done",function(){outbox.textContent=""})]))))};
+ var draw=function(){if(!made)return;
   var txt=made.codes.map(function(c){return c+"   "+made.plan+"   "+money(made.price)}).join("\n");
-  outbox.append(h("div",{className:"card"},h("h2",{},made.codes.length+" new vouchers — "+made.plan),
-   h("p",{className:"muted noprint"},"Each code is already live on the router. Print or copy them now; codes are also listed below."),
-   h("div",{},made.codes.map(function(c){return h("pre",{className:"slip"},slip(c))})),
-   h("div",{className:"noprint"},btn("Copy all",function(){navigator.clipboard.writeText(txt).then(function(){flash("Copied")},function(){flash("Copy failed",1)})}),
+  showSlips(made.codes.map(function(c){return{code:c,batch:made.batch,status:"new",plan_id:made.plan_id}}),made.plan,
+   [btn("Copy all",function(){navigator.clipboard.writeText(txt).then(function(){flash("Copied")},function(){flash("Copy failed",1)})}),
     btn("Download CSV",function(){var csv="code,plan,price\n"+made.codes.map(function(c){return c+","+made.plan+","+made.price}).join("\n");
-     var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=made.batch+".csv";a.click()}),
-    btn("Print",function(){window.print()}),btn("Done",function(){made=null;render()}))))};
+     var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=made.batch+".csv";a.click()})])};
  draw();
- var list=D.vouchers||[];
+ var list=D.vouchers||[],batches=[];list.forEach(function(v){if(v.batch&&batches.indexOf(v.batch)<0)batches.push(v.batch)});
+ var bs=sel(batches.length?batches.map(function(b){return[b,b]}):[["","(no batches yet)"]],batches[0]),
+  stsel=sel([["new","Unused (new) only"],["all","All statuses"],["used","Used only"],["deleted","Deleted only"]],"new"),
+  tplBox=h("textarea",{rows:11},D.settings.voucher_slip_template||SLIP_DEF);
  return h("div",{},
   h("div",{className:"card noprint"},h("h2",{},"Generate vouchers"),
    h("label",{},"Plan",ps),h("label",{},"How many (1-200)",cnt),
    btn("Generate",async function(){var r=await api("makeVouchers",{plan_id:ps.value,count:Number(cnt.value)});
     if(!r.ok){flash("Failed: "+r.error,1);return}made=r;flash("Generated "+r.codes.length);await load()},1)),
   outbox,
+  h("div",{className:"card noprint"},h("h2",{},"Print slips for existing vouchers"),
+   h("p",{className:"muted"},"Pick a batch and a status, preview the slips, then print (one slip per page)."),
+   h("label",{},"Batch",bs),h("label",{},"Status",stsel),
+   btn("Preview & print slips",function(){var b=bs.value,st=stsel.value;
+    var rows=list.filter(function(v){return v.batch===b&&(st==="all"||v.status===st)}).slice(0,200);
+    showSlips(rows,"batch "+b)},1),
+   h("label",{},"Voucher slip template. Tokens: {site} {batch} {pin} {plan} {validity} {rate} {data_time} {price} {status}",tplBox),
+   btn("Save template",function(){act("saveSettings",{settings:{voucher_slip_template:tplBox.value}})},1),
+   btn("Reset to default template",function(){tplBox.value=SLIP_DEF;act("saveSettings",{settings:{voucher_slip_template:SLIP_DEF}})})),
   h("p",{className:"muted noprint"},"Customers enter a code on the Voucher PIN tab of the login page. Codes work once the router has synced (about a minute)."),
   list.length?table(["Code","Plan","Status","Used by","Created","Batch",""],list.map(function(v){return h("tr",{},
    h("td",{},v.code),h("td",{},v.plan_id),h("td",{className:"s-"+v.status},v.status),h("td",{},v.used_by||"-"),
