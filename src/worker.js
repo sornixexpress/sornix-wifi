@@ -70,24 +70,6 @@ async function sendSms(db, env, to, message, tag) {
 
 async function smsFee(db) { const s = await getSettings(db); const n = Number(s.sms_fee); return Number.isFinite(n) && n > 0 ? n : SMS_FEE_DEF; }
 
-async function sendOrderSms(db, env, o, kind) {
-  if (!o.sms_notify || !o.sms_phone || o.sms_sent) return;
-  const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1", o.plan_id);
-  const s = await getSettings(db);
-  const fee = o.sms_notify ? await smsFee(db) : 0;
-  const map = {
-    "{amount}": String((plan ? plan.price : 0) + fee), "{plan}": plan ? plan.name : o.plan_id,
-    "{identifier}": o.identifier, "{validity}": plan ? plan.validity : "1d", "{order}": o.order_id,
-    "{support}": s.support_phone || s.site_name || "Sornix WiFi", "{site}": s.site_name || "Sornix WiFi"
-  };
-  const tpl = kind === "receipt"
-    ? (s.sms_receipt_template || "{site}: payment of NGN {amount} received for {plan}. Login: {identifier}, valid {validity}. Order {order}. Support: {support}")
-    : (s.sms_active_template || "{site}: your {plan} plan is ACTIVE. Login: {identifier}, valid {validity}. Order {order}. Support: {support}");
-  const msg = tpl.replace(/\{(?:amount|plan|identifier|validity|order|support|site)\}/g, (m) => map[m] != null ? map[m] : m);
-  const r = await sendSms(db, env, o.sms_phone, msg, kind + ":" + o.order_id);
-  if (r.ok) await run(db, "UPDATE orders SET sms_sent=1 WHERE order_id=?1", o.order_id);
-}
-
 // account passwords are encrypted at rest (plaintext only ever leaves towards the router over HTTPS sync)
 async function encKey(env) { const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode((env.OTP_SALT || "dev") + "|acct-enc")); return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]); }
 async function encPass(env, pw) { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await encKey(env), new TextEncoder().encode(pw)); const out = new Uint8Array(12 + ct.byteLength); out.set(iv, 0); out.set(new Uint8Array(ct), 12); return btoa(String.fromCharCode(...out)); }
@@ -125,7 +107,6 @@ async function markApproved(db, env, o, gwName, ref, amountMajor, tag) {
     gwName, ref, amountMajor, nowIso(), o.order_id);
   await audit(db, gwName, tag || "webhookApprove", o.order_id + " ref " + ref);
   notify(env, "\u{1F4B0} " + (tag === "autoApprove" ? "Paid" : "Webhook") + ": \u20A6" + amountMajor + " via " + gwName + " - " + o.order_id + " (" + o.identifier + ")");
-  await sendOrderSms(db, env, o, "receipt");
   return { ok: true };
 }
 
@@ -470,17 +451,14 @@ async function actUpdateOrder(db, env, b, who) {
   await run(db, "UPDATE orders SET status=?1,paid_at=COALESCE(paid_at,?2),updated_at=?2,paid_via=COALESCE(paid_via,'bank') WHERE order_id=?3", s, nowIso(), o.order_id);
   await audit(db, who, "updateOrder", o.order_id + " -> " + s);
   notify(env, (s === "approved" ? "\u2705 Approved " : "\u274C Rejected ") + o.order_id + " (" + o.identifier + ") by " + who);
-  if (s === "approved") await sendOrderSms(db, env, o, "active");
   return json({ ok: true });
 }
 
 async function actBulkOrders(db, env, who) {
-  const pending = await q(db, "SELECT * FROM orders WHERE status='requested'");
   const r = await run(db, "UPDATE orders SET status='approved',paid_via=COALESCE(paid_via,'bank'),paid_at=COALESCE(paid_at,?1),updated_at=?1 WHERE status='requested'", nowIso());
   const n = r.meta ? r.meta.changes : 0;
   await audit(db, who, "bulkApprove", n + " orders");
   notify(env, "\u2705 Bulk approved " + n + " orders by " + who);
-  for (const o of pending) await sendOrderSms(db, env, o, "active");
   return json({ ok: true, count: n });
 }
 
@@ -509,7 +487,7 @@ async function actMakeVouchers(db, env, b, who) {
   await db.batch(stmts);
   await audit(db, who, "makeVouchers", count + " x " + plan.plan_id + " batch " + batch);
   notify(env, "\u{1F39F} " + codes.length + " vouchers created for " + plan.name + " (batch " + batch + ") by " + who);
-  return json({ ok: true, codes, plan: plan.name, price: plan.price, batch });
+  return json({ ok: true, codes, plan: plan.name, price: plan.price, batch, plan_id: plan.plan_id, validity: plan.validity, rate_limit: plan.rate_limit });
 }
 
 async function actUpdateVoucher(db, b, who) {

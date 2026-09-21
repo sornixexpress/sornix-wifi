@@ -182,12 +182,12 @@ curl -X POST --data "U TEST-CODE" "http://127.0.0.1:8787/router/sync?token=devto
   - Balance: `GET /balance/?token=…` — shown on **admin → Dashboard → SMS wallet** card (cached in
     `router_state.sms_balance`, refresh button re-queries; low warning under 50 units).
 - **Customer SMS features (login page):**
-  - "Request bank details by SMS" replaces the old WhatsApp bank-details request
+  - "Request bank details by SMS (₦10 fee)" replaces the old WhatsApp bank-details request
     (`requestAccountSms`, rate-limited 5 per phone per 15 min, uses `settings.bank_details`).
-  - Opt-in checkbox "Notify me by SMS (+₦10)" adds `settings.sms_fee` to the Paystack/Flutterwave charge
-    (`orders.sms_notify`, `orders.sms_phone`); a receipt SMS is sent on verified online payment, or an
-    activation SMS when a bank-transfer order is approved (`orders.sms_sent` prevents duplicates).
-  - Templates: `sms_bank_template`, `sms_receipt_template`, `sms_active_template` (admin-editable).
+    Requesting it marks the order `sms_notify`, which adds `settings.sms_fee` to the order total
+    (enforced in `verifyPayment`/webhooks minimum-amount checks).
+  - No receipt or activation SMS are sent; Telegram carries all business activity instead.
+  - Template: `sms_bank_template` (admin-editable).
 - **Telegram is the default channel for ALL activity:** new orders, payments, approvals, rejections,
   bulk approvals, router activations, voucher first-use, voucher batches, revokes and force-logouts are
   pushed to `TELEGRAM_CHAT_ID` via `TELEGRAM_BOT_TOKEN` (same secrets as admin OTP).

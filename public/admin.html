@@ -8,6 +8,8 @@ button.sm{display:inline-block;width:auto;padding:6px 10px;margin:0 4px 0 0}.s-r
 img.th{height:44px;width:120px;object-fit:cover;border-radius:6px}#toast{position:fixed;left:16px;bottom:16px;background:#141d30;border:1px solid #24304a;padding:10px 14px;border-radius:8px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}.kpi{background:#141d30;border:1px solid #24304a;border-radius:10px;padding:12px}.kpi b{display:block;font-size:1.5rem;color:#f5a524}.kpi span{color:#93a0b5;font-size:.82rem}
 .codes{font:14px/1.7 ui-monospace,Menlo,Consolas,monospace;background:#0b1220;border:1px solid #2c3a57;border-radius:8px;padding:10px;max-height:240px;overflow:auto;white-space:pre-wrap}
+pre.slip{font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;background:#fff;color:#000;border:1px dashed #999;border-radius:6px;padding:10px 12px;margin:0 0 16px;white-space:pre;page-break-after:always;break-after:page}
+pre.slip:last-child{page-break-after:auto;break-after:auto}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 @media print{body{background:#fff;color:#000}.noprint{display:none!important}.codes{border:0;color:#000;background:#fff}}
 </style></head><body><main id="app"></main><div id="toast" hidden></div><a class="fab noprint" id="fab" hidden aria-label="WhatsApp support" target="_blank" rel="noopener">💬</a>
@@ -102,11 +104,28 @@ P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_i
 P.vouchers=function(){var plans=D.plans.filter(function(p){return p.active}),
  ps=sel(plans.map(function(p){return [p.plan_id,p.name+" — "+money(p.price)]}),plans[0]&&plans[0].plan_id),
  cnt=h("input",{type:"number",value:10,min:1,max:200}),outbox=h("div",{});
+ var slip=function(c){return ["========================================",
+  "        SORNI UNLIMITED DATA          ",
+  "      High-Speed Interne      ",
+  "========================================",
+  "Batch:              "+(made.batch||""),
+  "",
+  "Voucher Pin:        "+c,
+  "",
+  "Allocated Data/Time : "+(made.validity||"")+" \u00B7 "+(made.rate_limit||""),
+  "Rate / Price        : \u20A6"+made.price,
+  "Status              : Active      ",
+  "",
+  "----------------------------------------",
+  "* Enter login details on the browser page.",
+  "* Timer starts upon first login.",
+  "* Unused time is non-refundable.",
+  "========================================"].join("\n")};
  var draw=function(){outbox.textContent="";if(!made)return;
   var txt=made.codes.map(function(c){return c+"   "+made.plan+"   "+money(made.price)}).join("\n");
   outbox.append(h("div",{className:"card"},h("h2",{},made.codes.length+" new vouchers — "+made.plan),
    h("p",{className:"muted noprint"},"Each code is already live on the router. Print or copy them now; codes are also listed below."),
-   h("pre",{className:"codes"},txt),
+   h("div",{},made.codes.map(function(c){return h("pre",{className:"slip"},slip(c))})),
    h("div",{className:"noprint"},btn("Copy all",function(){navigator.clipboard.writeText(txt).then(function(){flash("Copied")},function(){flash("Copy failed",1)})}),
     btn("Download CSV",function(){var csv="code,plan,price\n"+made.codes.map(function(c){return c+","+made.plan+","+made.price}).join("\n");
      var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=made.batch+".csv";a.click()}),
@@ -149,7 +168,7 @@ P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"o
   h("label",{},"Flutterwave webhook secret hash",sf.wh),
   btn("Save webhook hash",function(){act("saveSettings",{settings:{flw_webhook_hash:sf.wh.value.trim()}})},1)),
  h("div",{className:"card"},h("h2",{},"SMS notifications (SmartSMS Solutions)"),
-  h("p",{className:"muted"},"Customers can request your bank account number by SMS on the login page, and opt into SMS order notifications for a \u20A6"+(D.settings.sms_fee||10)+" charge added to their payment. Create an API-x token at app.smartsmssolutions.com (Developer \u2192 API tokens) and paste it here. Business activity alerts also go to your Telegram automatically."),
+  h("p",{className:"muted"},"Customers can request your bank account number by SMS on the login page; a \u20A6"+(D.settings.sms_fee||10)+" SMS charge is added to that order's total. No other customer SMS is sent - business activity alerts go to your Telegram automatically."),
   h("label",{},"API-x token",sf.tk),h("label",{},"Sender ID (exactly as approved on SmartSMS)",sf.sd),h("label",{},"SMS charge when customer opts in (NGN)",sf.fee),
   h("label",{},"Bank-details SMS template. Tokens: {site} {bank_details} {support}",sf.bt),
   btn("Save SMS settings",function(){act("saveSettings",{settings:{sms_token:sf.tk.value.trim(),sms_sender:sf.sd.value.trim(),sms_fee:sf.fee.value,sms_bank_template:sf.bt.value}})},1),

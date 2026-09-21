@@ -20,8 +20,6 @@ $(if error)<p class="err">$(error)</p>$(endif)
 <div id="dev-box"><input id="oid" placeholder="Username or MAC address"><p class="muted">Sign in later with the Auto MAC button.</p></div>
 <div id="acct-box" hidden><input id="ausr" placeholder="Choose a username" autocomplete="off"><input id="apw" type="password" placeholder="Choose a password (4-32 characters)" autocomplete="new-password"><p class="muted" id="unote">Use these on the Username tab from any device you like.</p></div>
 <input id="oph" type="tel" placeholder="Your phone number" autocomplete="tel">
-<label class="chk" style="display:flex;gap:8px;align-items:center;color:#93a0b5;font-size:.92rem;margin:8px 0"><input type="checkbox" id="smsn" style="width:auto;margin:0"><span>Notify me by SMS about this order (+&#8358;<span id="smsfee">10</span> SMS charge)</span></label>
-<p class="muted" id="ototal" hidden></p>
 <p id="omsg" class="err"></p>
 <button class="p" id="paynow" hidden>Pay online now</button>
 <button id="go">Request bank details by SMS (&#8358;10 fee)</button>
@@ -66,7 +64,6 @@ q("#showall").onclick=function(){showAll=!showAll;drawPlans()};
 function boot(n){Promise.all([j(API+"?action=getSettings"),j(API+"?action=getPlans")]).then(function(a){q("#perr").textContent="";
  S=a[0].settings||{};GW=a[0].gateways||{};
  q("#title").textContent=S.site_name||"Sornix Express WiFi";if(S.welcome_text)q("#welcome").textContent=S.welcome_text;
- q("#smsfee").textContent=String(Number(S.sms_fee||10));
  var ph=String(S.whatsapp_phone||S.support_phone||"").replace(/\D/g,"");if(ph){q("#wa").href="https://wa.me/"+ph;q("#wa").hidden=false}
  var bn=(a[0].banners||[]),i=0;if(bn.length){q("#ad").hidden=false;var show=function(){var b=bn[i++%bn.length];q("#adi").src=b.image_url;if(b.link_url)q("#adl").href=b.link_url;else q("#adl").removeAttribute("href")};show();if(bn.length>1)setInterval(show,5000)}
  PLANS=a[1].plans||[];drawPlans();
@@ -75,14 +72,10 @@ function boot(n){Promise.all([j(API+"?action=getSettings"),j(API+"?action=getPla
 boot(1);
 
 function liveGw(){for(var k in GW)if(GW[k]&&GW[k].enabled&&GW[k].public_key)return k;return null}
-function feeNow(){return q("#smsn").checked?Number(S.sms_fee||10):0}
-function drawTotal(){var t=q("#ototal");if(!cur){t.hidden=true;return}
- if(q("#smsn").checked){t.hidden=false;t.textContent="Total to pay: \u20A6"+(cur.price+feeNow())+" (plan \u20A6"+cur.price+" + SMS \u20A6"+feeNow()+")"}else t.hidden=true}
-q("#smsn").onchange=drawTotal;
 function openOrder(p){cur=p;q("#mt").textContent=p.name+" - \u20A6"+p.price;
  q("#ms").textContent=p.validity+", "+speed(p.rate_limit)+", "+p.shared_users+" device(s)";
  q("#oid").value=MAC;q("#ausr").value="";q("#apw").value="";q("#omsg").textContent="";
- q("#done").hidden=true;q("#go").hidden=false;q("#paynow").hidden=!liveGw();drawTotal();q("#ov").hidden=false}
+ q("#done").hidden=true;q("#go").hidden=false;q("#paynow").hidden=!liveGw();q("#ov").hidden=false}
 q("#cx").onclick=function(){q("#ov").hidden=true};
 
 q("#ausr").onblur=function(){var u=this.value.trim();if(u.length<3)return;
@@ -90,15 +83,14 @@ q("#ausr").onblur=function(){var u=this.value.trim();if(u.length<3)return;
   if(!r.ok){n.className="err";n.textContent=msg(r.error)}
   else{n.className=r.available?"ok":"err";n.textContent=r.available?"\u2713 "+u+" is available.":u+" is taken. Pick another."}}).catch(function(){})};
 
-function order(){var ph=q("#oph").value.trim(),body={action:"createOrder",plan_id:cur.plan_id,phone:ph,sms_notify:q("#smsn").checked};
+function order(withSms){var ph=q("#oph").value.trim(),body={action:"createOrder",plan_id:cur.plan_id,phone:ph,sms_notify:!!withSms};
  if(idmode==="acct"){body.account_user=q("#ausr").value.trim();body.account_pass=q("#apw").value}
  else body.identifier=q("#oid").value.trim();
  return post(body)}
 
 q("#go").onclick=function(){var m=q("#omsg"),ph=q("#oph").value.trim();m.className="muted";m.textContent="Placing order and sending bank details by SMS…";
  if(!ph){m.className="err";m.textContent="Enter your phone number - the bank details are sent to it by SMS.";return}
- q("#smsn").checked=true;drawTotal();
- order().then(function(r){
+ order(true).then(function(r){
   if(!r.ok){m.className="err";m.textContent=msg(r.error);return}
   q("#dvf").href=VERIFY+"?order="+encodeURIComponent(r.order_id);
   return post({action:"requestAccountSms",phone:ph}).then(function(r2){
@@ -112,25 +104,25 @@ function loadJs(src){return new Promise(function(res,rej){if(document.querySelec
 
 q("#paynow").onclick=function(){var gw=liveGw(),m=q("#omsg");if(!gw)return;
  m.className="muted";m.textContent="Preparing payment…";
- order().then(function(r){
+ order(false).then(function(r){
   if(!r.ok){m.className="err";m.textContent=msg(r.error);return}
   var oid=r.order_id,ref=oid+"-"+Date.now().toString(36).toUpperCase(),
    ph=q("#oph").value.trim().replace(/[^\d+]/g,""),em=(ph.replace(/\D/g,"")||"customer")+"@sornix.com.ng";
   var settle=function(){m.className="muted";m.textContent="Confirming payment…";
    post({action:"verifyPayment",order_id:oid,gateway:gw,reference:ref}).then(function(v){
-    if(v.ok){m.className="ok";m.textContent="Payment confirmed. Your plan activates within about a minute."+((function(){try{return q("#smsn").checked?" A confirmation SMS is on its way.":""}catch(e){return""}})());
+    if(v.ok){m.className="ok";m.textContent="Payment confirmed. Your plan activates within about a minute.";
      q("#dvf").href=VERIFY+"?order="+encodeURIComponent(oid);q("#done").hidden=false;q("#go").hidden=true;q("#paynow").hidden=true}
     else{m.className="err";m.textContent=msg(v.error)+" Order "+oid+"."}}).catch(function(){
      m.className="err";m.textContent="Could not confirm. Check status with order "+oid+"."})};
   if(gw==="paystack"){
    loadJs("https://js.paystack.co/v1/inline.js").then(function(){
-    PaystackPop.setup({key:GW.paystack.public_key,email:em,amount:Math.round((cur.price+feeNow())*100),currency:"NGN",ref:ref,
+    PaystackPop.setup({key:GW.paystack.public_key,email:em,amount:Math.round(cur.price*100),currency:"NGN",ref:ref,
      metadata:{order_id:oid,identifier:r.identifier,phone:ph},
      callback:function(){settle()},onClose:function(){m.className="err";m.textContent="Payment window closed. Order "+oid+" is still waiting."}}).openIframe()
    }).catch(function(){m.className="err";m.textContent="Payment script blocked on this network. Use bank transfer."})}
   else if(gw==="flutterwave"){
    loadJs("https://checkout.flutterwave.com/v3.js").then(function(){
-     FlutterwaveCheckout({public_key:GW.flutterwave.public_key,tx_ref:ref,amount:cur.price+feeNow(),currency:"NGN",
+     FlutterwaveCheckout({public_key:GW.flutterwave.public_key,tx_ref:ref,amount:cur.price,currency:"NGN",
      customer:{email:em,phonenumber:ph,name:r.identifier},customizations:{title:S.site_name||"Sornix Express WiFi",description:cur.name},
      callback:function(){settle()},onclose:function(){}}) 
    }).catch(function(){m.className="err";m.textContent="Payment script blocked on this network. Use bank transfer."})}
