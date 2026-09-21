@@ -417,15 +417,16 @@ async function actDiag(db, env) {
 
 // ---------------------------------------------------------------- router sync
 function parseReport(text) {
-  const users = [], active = [], bypass = []; let version = "";
+  const users = [], active = [], bypass = []; let version = "", nline = "";
   String(text || "").split("\n").forEach(line => {
     const p = line.trim().split(/\s+/);
     if (p[0] === "U" && p[1]) users.push(p[1]);
     else if (p[0] === "A" && p[1]) active.push({ user: p[1], mac: normMac(p[2]) || p[2] });
     else if (p[0] === "B" && p[1]) bypass.push(normMac(p[1]) || p[1]);
     else if (p[0] === "V") version = p.slice(1).join(" ");
+    else if (p[0] === "N") nline = p.slice(1).join(" ");
   });
-  return { users, active, bypass, version };
+  return { users, active, bypass, version, nline };
 }
 
 async function routerSync(db, env, req) {
@@ -491,51 +492,87 @@ async function routerSync(db, env, req) {
   const newProv = {};
 
   // 4. build RSC
+  const missingEarly = [...desired.keys()].filter(n => !haveU.has(n));
   const apiBase = env.PUBLIC_ORIGIN || "https://isp.sornix.com.ng";
   const out = ["# Sornix sync generated " + t + " (router " + (rep.version || "?") + ") - do not edit",
     "# self-update: keep the on-router sync script identical to the repo copy",
     '/file remove [find where name="sx-sync-new.rsc"]',
     ':do { /tool fetch url="' + apiBase + '/router/files/sx-sync.rsc?token=' + env.ROUTER_TOKEN + '" dst-path="sx-sync-new.rsc" as-value } on-error={ :log warning "sx-sync: self-update fetch failed" }',
     ':do { /system script set [find where name="sx-sync"] source=[/file get [find where name="sx-sync-new.rsc"] contents] } on-error={ :log warning "sx-sync: self-update skipped" }'];
+  const beaconRaw = (m) => '/tool fetch url="' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '&m=' + m + '" http-method=post http-data="b" output=none as-value';
+  const beacon = (m) => ':do { ' + beaconRaw(m) + ' } on-error={ }';
+  const guarded = (cmd, tag) => ':do { ' + cmd + '; ' + beaconRaw("OK-" + tag) + ' } on-error={ ' + beaconRaw("ERR-" + tag) + ' }';
+  const beaconRawDyn = (expr) => '/tool fetch url=("' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '&m=" . (' + expr + ')) http-method=post http-data="b" output=none as-value';
+  const beaconRawBody = (expr) => '/tool fetch url="' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '" http-method=post http-data=(' + expr + ') output=none as-value';
+  const dynEarly = (expr) => ':do { ' + beaconRawDyn(expr) + ' } on-error={ }';
+  out.push(beacon("ck-selfupdate"));
+  if (missingEarly.length) {
+    // state + license read-back FIRST, before anything can abort the import
+    out.push(':do { ' + beaconRawDyn('"lic-" . [/system license get level] . " board-" . [/system resource get board-name] . " nusers-" . [/ip hotspot user print count-only] . " nprof-" . [/ip hotspot user profile print count-only]') + ' } on-error={ }');
+    out.push(':local la ""');
+    out.push(':foreach i in=[/log find] do={ :if ([:len $la] < 700) do={ :set $la (([/log get $i topics] . ": " . [/log get $i message] . " << ") . $la) } }');
+    out.push(':do { ' + beaconRawBody('"LOGTAIL: " . $la') + ' } on-error={ }');
+  }
   const neededProfiles = new Set();
   desired.forEach(d => neededProfiles.add(d.plan));
   for (const pid of neededProfiles) {
     const p = planById[pid]; if (!p) continue;
     const pn = profileName(pid);
-    out.push(':if (:len [/ip hotspot user profile find where name="' + pn + '"] = 0) do={ /ip hotspot user profile add name="' + pn + '" rate-limit="' + esc(p.rate_limit) + '" shared-users=' + (p.shared_users || 1) + ' login-by=cookie,mac,http-pap comment="sx" } else={ /ip hotspot user profile set [find where name="' + pn + '"] rate-limit="' + esc(p.rate_limit) + '" shared-users=' + (p.shared_users || 1) + " }");
+    // NOTE: this RouterOS build rejects some properties on profile add (comment= hard-errors, verified by
+    // probes) - so: minimal add, then per-property fault-tolerant sets; unsupported ones are skipped silently
+    out.push(':do { /ip hotspot user profile add name="' + pn + '" } on-error={ }');
+    out.push(':do { /ip hotspot user profile set [find where name="' + pn + '"] rate-limit="' + esc(p.rate_limit) + '" } on-error={ }');
+    out.push(':do { /ip hotspot user profile set [find where name="' + pn + '"] shared-users=' + (p.shared_users || 1) + " } on-error={ }");
+    out.push(':do { /ip hotspot user profile set [find where name="' + pn + '"] login-by=cookie,mac,http-pap } on-error={ }');
+    out.push(dynEarly('"profexists-' + pn + '-" . [:len [/ip hotspot user profile find where name="' + pn + '"]]'));
   }
+  out.push(beacon("ck-profiles"));
   for (const [name, d] of desired) {
     const pn = profileName(d.plan);
     const p = planById[d.plan];
     const lim = p ? p.validity : "1d";
     const reset = haveU.has(name) && prov[name] && prov[name].c !== d.src;
-    if (reset) out.push(':foreach i in=[/ip hotspot user find where name="' + esc(name) + '"] do={ /ip hotspot user remove $i }  # renewal reset');
+    // NOTE: menu commands inside :if/:foreach do={ } are silently dropped by this firmware's
+    // import parser (verified by probes) - only bare commands inside :do/on-error execute.
+    if (reset) out.push(':do { /ip hotspot user remove [find where name="' + esc(name) + '"] } on-error={ }  # renewal reset');
     if (!haveU.has(name) || reset) {
-      out.push(':if (:len [/ip hotspot user find where name="' + esc(name) + '"] = 0) do={ /ip hotspot user add name="' + esc(name) + '" password="' + esc(d.pw) + '" profile="' + pn + '" limit-uptime=' + lim + (d.mac ? ' mac-address="' + esc(d.mac) + '"' : "") + ' comment="sx" }');
+      // adopt same-name users that lack the sx tag (invisible to the report otherwise)
+      out.push(':do { /ip hotspot user set [find where name="' + esc(name) + '" and comment!="sx"] comment="sx" profile="' + pn + '" limit-uptime=' + lim + (d.mac ? ' mac-address="' + esc(d.mac) + '"' : "") + ' password="' + esc(d.pw) + '" } on-error={ }');
+      out.push(':do { /ip hotspot user add name="' + esc(name) + '" password="' + esc(d.pw) + '" profile="' + pn + '" limit-uptime=' + lim + (d.mac ? ' mac-address="' + esc(d.mac) + '"' : "") + ' comment="sx" } on-error={ ' + beaconRaw("ERR-uadd-" + encodeURIComponent(name)) + ' }');
     }
     newProv[name] = { c: d.src, e: d.expires || "" };
     if (reset && prov[name]) prov[name] = newProv[name];
   }
+  out.push(beacon("ck-users"));
   for (const name of rep.users) {
-    if (!desired.has(name)) out.push(':foreach i in=[/ip hotspot user find where name="' + esc(name) + '"] do={ /ip hotspot user remove $i }');
+    if (!desired.has(name) && !name.startsWith("DIAG")) out.push(':do { /ip hotspot user remove [find where name="' + esc(name) + '"] } on-error={ }');
   }
   // whitelist -> hotspot ip-binding bypassed
   const wl = await q(db, "SELECT mac FROM whitelist");
   const wantB = new Set(wl.map(w => w.mac));
-  for (const mac of wantB) if (!haveB.has(mac)) out.push(':if (:len [/ip hotspot ip-binding find where comment="sx" and mac-address="' + mac + '"] = 0) do={ /ip hotspot ip-binding add mac-address="' + mac + '" type=bypassed comment="sx" }');
-  for (const mac of rep.bypass) if (!wantB.has(mac)) out.push(':foreach i in=[/ip hotspot ip-binding find where comment="sx" and mac-address="' + mac + '"] do={ /ip hotspot ip-binding remove $i }');
+  for (const mac of wantB) if (!haveB.has(mac)) out.push(':do { /ip hotspot ip-binding add mac-address="' + mac + '" type=bypassed comment="sx" } on-error={ }');
+  for (const mac of rep.bypass) if (!wantB.has(mac)) out.push(':do { /ip hotspot ip-binding remove [find where comment="sx" and mac-address="' + mac + '"] } on-error={ }');
 
-  // one-time diagnostics while the router reports zero sx users: probe whether
-  // plain and profiled user adds work at all (auto-removed once healthy)
-  if (rep.users.length === 0 && desired.size > 0) {
-    out.push("# diagnostics (auto-cleaned once provisioning works)");
-    out.push(':do { /ip hotspot user profile add name="sx_diag" rate-limit="1M/1M" shared-users=1 comment="sx" } on-error={ }');
-    out.push(':do { /ip hotspot user add name="DIAGPROF" password="diag1234" profile="sx_diag" limit-uptime=1h comment="sx" } on-error={ :log error "sx-probe: profiled add failed" }');
-    out.push(':do { /ip hotspot user add name="DIAGPLAIN" password="diag1234" limit-uptime=1h comment="sx" } on-error={ :log error "sx-probe: plain add failed" }');
+  // state read-back probes while any desired user is missing on the router
+  const missing = missingEarly;
+  if (missing.length) {
+    const dyn = (expr) => ':do { ' + beaconRawDyn(expr) + ' } on-error={ }';
+    out.push(':local pn2 ""');
+    out.push(':foreach i in=[/ip hotspot user profile find] do={ :set $pn2 ($pn2 . [/ip hotspot user profile get $i name] . ",") }');
+    out.push(dyn('"profs-" . $pn2'));
+    out.push(dyn('"usercount-" . [/ip hotspot user print count-only]'));
+  } else {
+    // healthy: clean up every diagnostic artifact
+    for (const name of rep.users) if (name.startsWith("DIAG")) out.push(':do { /ip hotspot user remove [find where name="' + esc(name) + '"] } on-error={ }');
+    out.push(':do { /ip hotspot user profile remove [find where name~"sx_p"] } on-error={ }');
+    out.push(':do { /ip hotspot user profile remove [find where name="sx_diag"] } on-error={ }');
+    out.push(':do { /ip hotspot user profile remove [find where name~"sx_t"] } on-error={ }');
   }
+  out.push(beacon("ck-end"));
 
   await run(db, "INSERT INTO router_state(key,value) VALUES('prov',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(newProv));
   await run(db, "INSERT INTO router_state(key,value) VALUES('lastU',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.users));
+  await run(db, "INSERT INTO router_state(key,value) VALUES('allU',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.nline || "");
   const rscText = out.join("\n") + "\n";
   await run(db, "INSERT INTO router_state(key,value) VALUES('pending_rsc',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rscText);
   await run(db, "INSERT INTO router_state(key,value) VALUES('counts',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ users: rep.users.length, active: rep.active.length, want: desired.size, at: t }));
@@ -565,6 +602,19 @@ export default {
         const r = await env.ASSETS.fetch(new Request("https://assets.internal" + ap));
         if (!r.ok) return new Response("asset missing\n", { status: 404, headers: { "Content-Type": "text/plain" } });
         return new Response(r.body, { headers: { "Content-Type": r.headers.get("Content-Type") || "text/plain", "Cache-Control": "no-store", ...CORS } });
+      }
+      if (path === "/router/diag") {
+        // checkpoint beacons from the imported RSC on the router
+        const tok = url.searchParams.get("token") || "";
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("bad token", { status: 403 });
+        const m = (url.searchParams.get("m") || "").slice(0, 900) || ((await req.text()) || "?").slice(0, 900);
+        const prevRow = await one(env.DB, "SELECT value FROM router_state WHERE key='rdiag'");
+        let arr = []; try { arr = JSON.parse(prevRow ? prevRow.value : "[]"); } catch { arr = []; }
+        if (!Array.isArray(arr)) arr = [];
+        arr.push({ m, at: new Date().toISOString().slice(11, 19) });
+        if (arr.length > 40) arr = arr.slice(-40);
+        await run(env.DB, "INSERT INTO router_state(key,value) VALUES('rdiag',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(arr));
+        return new Response("ok");
       }
       if (path === "/router/commands") {
         // download channel: returns the RSC computed for the last received report

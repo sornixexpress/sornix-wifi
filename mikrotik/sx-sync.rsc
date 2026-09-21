@@ -39,6 +39,10 @@
   :set $rep ($rep . "B " . [/ip hotspot ip-binding get $b mac-address] . "\n")
 }
 :set $rep ($rep . "V " . [/system resource get version] . " " . [/system identity get name] . "\n")
+# N = total hotspot users + names of users NOT tagged comment=sx (orphan visibility)
+:local nx ""
+:foreach u2 in=[/ip hotspot user find where comment!="sx"] do={ :set $nx ($nx . [/ip hotspot user get $u2 name] . ",") }
+:set $rep ($rep . "N " . [/ip hotspot user print count-only] . " " . $nx . "\n")
 
 # POST the report (body via http-data, reply discarded), then DOWNLOAD the
 # command file with a plain GET (proven shape) and import it
