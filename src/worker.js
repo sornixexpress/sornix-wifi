@@ -533,6 +533,39 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      if (path === "/router/bootstrap") {
+        // one-time installer: token-gated RSC that pulls pages + sync script from this Worker
+        const tok = url.searchParams.get("token") || "";
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+        const api = env.PUBLIC_ORIGIN || "https://isp.sornix.com.ng";
+        const host = new URL(api).host;
+        const rsc = [
+          "# Sornix one-time bootstrap - generated " + nowIso(),
+          ':global sxApi "' + api + '"',
+          ':global sxTok "' + env.ROUTER_TOKEN + '"',
+          '/system script remove [find where name="sx-config"]',
+          '/system script add name="sx-config" source=":global sxApi \\"' + api + '\\"\\n:global sxTok \\"' + env.ROUTER_TOKEN + '\\""',
+          '# pull the sync script and the captive-portal pages from the Worker',
+          '/tool fetch url=("$sxApi/mikrotik/sx-sync.rsc") dst-path="sx-sync.rsc" as-value',
+          '/system script remove [find where name="sx-sync"]',
+          '/system script add name="sx-sync" source=[/file get [find where name="sx-sync.rsc"] contents]',
+          ':foreach f in={login.html;alogin.html;error.html;logout.html;redirect.html;status.html;sx.css} do={ /tool fetch url=("$sxApi/hotspot/" . $f) dst-path=("hotspot/" . $f) as-value }',
+          '/system scheduler remove [find where name="sx-sync"]',
+          '/system scheduler add name="sx-sync" interval=25s start-time=startup on-event="/system script run sx-config\\n/system script run sx-sync"',
+          '/ip hotspot walled-garden remove [find where comment="sx"]',
+          '/ip hotspot walled-garden add dst-host="' + host + '" comment="sx"',
+          '/ip hotspot walled-garden add dst-host="js.paystack.co" comment="sx"',
+          '/ip hotspot walled-garden add dst-host="api.paystack.co" comment="sx"',
+          '/ip hotspot walled-garden add dst-host="checkout.flutterwave.com" comment="sx"',
+          '/ip hotspot walled-garden add dst-host="api.flutterwave.com" comment="sx"',
+          '/ip hotspot walled-garden add dst-host="wa.me" comment="sx"',
+          '/system script run sx-config',
+          '/system script run sx-sync',
+          ':log info "sx-bootstrap: done"',
+          ""
+        ].join("\n");
+        return new Response(rsc, { headers: { "Content-Type": "text/plain", ...CORS } });
+      }
       if (path === "/router/sync" && req.method === "POST") return await routerSync(env.DB, env, req);
       if (path === "/healthz") return json({ ok: true, ts: nowIso() });
 
