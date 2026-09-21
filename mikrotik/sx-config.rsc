@@ -10,3 +10,8 @@
 # Must match the ROUTER_TOKEN secret on the Worker.
 # Generate:  openssl rand -hex 24   (or any 32+ random characters)
 :global sxTok "PASTE_ROUTER_TOKEN_HERE"
+
+# sync loop state (used by sx-sync; v6-safe initialisation)
+:global sxTick 0
+:global sxBusy "0"
+:global sxBusyTick 0

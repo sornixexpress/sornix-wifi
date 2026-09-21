@@ -560,7 +560,7 @@ export default {
           ':global sxApi "' + api + '"',
           ':global sxTok "' + env.ROUTER_TOKEN + '"',
           '/system script remove [find where name="sx-config"]',
-          '/system script add name="sx-config" source=":global sxApi \\"' + api + '\\"\\n:global sxTok \\"' + env.ROUTER_TOKEN + '\\""',
+          '/system script add name="sx-config" source=":global sxApi \\"' + api + '\\"\\n:global sxTok \\"' + env.ROUTER_TOKEN + '\\"\\n:global sxTick 0\\n:global sxBusy \\"0\\"\\n:global sxBusyTick 0"',
           '# pull the sync script and the captive-portal pages from the Worker (3 attempts each)',
           ':foreach f in={sx-sync.rsc;login.html;alogin.html;error.html;logout.html;redirect.html;status.html;sx.css} do={',
           '  :local dst ("hotspot/" . $f); :if ($f = "sx-sync.rsc") do={ :set dst "sx-sync.rsc" }',

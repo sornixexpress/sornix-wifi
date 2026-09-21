@@ -14,7 +14,6 @@
 :global sxBusy
 :global sxTick
 :global sxBusyTick
-:if ([:typeof $sxTick] = "nothing") do={ :set sxTick 0 }
 :set sxTick ($sxTick + 1)
 
 :if ($sxBusy = "1") do={
@@ -44,7 +43,7 @@
 /file add name="sxrep.txt" contents=$rep
 /file remove [find where name="sxcmd.rsc"]
 
-:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post upload=yes src-path="sxrep.txt" dst-path="sxcmd.rsc" timeout=20 as-value]
+:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post upload=yes src-path="sxrep.txt" dst-path="sxcmd.rsc" as-value]
 :if (($r->"status") = "finished") do={
   /import file-name="sxcmd.rsc"
   :log info "sx-sync: ok"
