@@ -40,15 +40,23 @@
 }
 :set $rep ($rep . "V " . [/system resource get version] . " " . [/system identity get name] . "\n")
 
-# v7-correct POST: body via http-data, reply captured via output=user
-:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post http-data=$rep as-value output=user]
+# POST the report (body via http-data, reply discarded), then DOWNLOAD the
+# command file with a plain GET (proven shape) and import it
+:local r [/tool fetch url=("$sxApi/router/sync?token=" . $sxTok) http-method=post http-data=$rep output=none as-value]
 :if (($r->"status") = "finished") do={
-  /file remove [find where name="sxcmd.rsc"]
-  /file add name="sxcmd.rsc" contents=($r->"data")
-  /import file-name="sxcmd.rsc"
-  :log info "sx-sync: ok"
+  :local r2 [/tool fetch url=("$sxApi/router/commands?token=" . $sxTok) dst-path="sxcmd.rsc" as-value]
+  :if (($r2->"status") = "finished") do={
+    :if ([/file get [find where name="sxcmd.rsc"] size] > 0) do={
+      :do { /import file-name="sxcmd.rsc" } on-error={ :log error "sx-sync: import failed" }
+      :log info ("sx-sync: ok, sx users " . [:len [/ip hotspot user find where comment="sx"]])
+    } else={
+      :log warning "sx-sync: empty command file"
+    }
+  } else={
+    :log warning ("sx-sync: commands fetch failed (" . ($r2->"status") . ")")
+  }
 } else={
-  :log warning ("sx-sync: fetch failed (" . ($r->"status") . ") - check internet, DNS and TLS certificate store")
+  :log warning ("sx-sync: post failed (" . ($r->"status") . ") - check internet, DNS and TLS certificate store")
 }
 
 :set sxBusy "0"

@@ -491,7 +491,12 @@ async function routerSync(db, env, req) {
   const newProv = {};
 
   // 4. build RSC
-  const out = ["# Sornix sync generated " + t + " (router " + (rep.version || "?") + ") - do not edit"];
+  const apiBase = env.PUBLIC_ORIGIN || "https://isp.sornix.com.ng";
+  const out = ["# Sornix sync generated " + t + " (router " + (rep.version || "?") + ") - do not edit",
+    "# self-update: keep the on-router sync script identical to the repo copy",
+    '/file remove [find where name="sx-sync-new.rsc"]',
+    ':do { /tool fetch url="' + apiBase + '/router/files/sx-sync.rsc?token=' + env.ROUTER_TOKEN + '" dst-path="sx-sync-new.rsc" as-value } on-error={ :log warning "sx-sync: self-update fetch failed" }',
+    ':do { /system script set [find where name="sx-sync"] source=[/file get [find where name="sx-sync-new.rsc"] contents] } on-error={ :log warning "sx-sync: self-update skipped" }'];
   const neededProfiles = new Set();
   desired.forEach(d => neededProfiles.add(d.plan));
   for (const pid of neededProfiles) {
@@ -520,9 +525,21 @@ async function routerSync(db, env, req) {
   for (const mac of wantB) if (!haveB.has(mac)) out.push(':if (:len [/ip hotspot ip-binding find where comment="sx" and mac-address="' + mac + '"] = 0) do={ /ip hotspot ip-binding add mac-address="' + mac + '" type=bypassed comment="sx" }');
   for (const mac of rep.bypass) if (!wantB.has(mac)) out.push(':foreach i in=[/ip hotspot ip-binding find where comment="sx" and mac-address="' + mac + '"] do={ /ip hotspot ip-binding remove $i }');
 
+  // one-time diagnostics while the router reports zero sx users: probe whether
+  // plain and profiled user adds work at all (auto-removed once healthy)
+  if (rep.users.length === 0 && desired.size > 0) {
+    out.push("# diagnostics (auto-cleaned once provisioning works)");
+    out.push(':do { /ip hotspot user profile add name="sx_diag" rate-limit="1M/1M" shared-users=1 comment="sx" } on-error={ }');
+    out.push(':do { /ip hotspot user add name="DIAGPROF" password="diag1234" profile="sx_diag" limit-uptime=1h comment="sx" } on-error={ :log error "sx-probe: profiled add failed" }');
+    out.push(':do { /ip hotspot user add name="DIAGPLAIN" password="diag1234" limit-uptime=1h comment="sx" } on-error={ :log error "sx-probe: plain add failed" }');
+  }
+
   await run(db, "INSERT INTO router_state(key,value) VALUES('prov',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(newProv));
+  await run(db, "INSERT INTO router_state(key,value) VALUES('lastU',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.users));
+  const rscText = out.join("\n") + "\n";
+  await run(db, "INSERT INTO router_state(key,value) VALUES('pending_rsc',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rscText);
   await run(db, "INSERT INTO router_state(key,value) VALUES('counts',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ users: rep.users.length, active: rep.active.length, want: desired.size, at: t }));
-  return new Response(out.join("\n") + "\n", { headers: { "Content-Type": "text/plain", ...CORS } });
+  return new Response(rscText, { headers: { "Content-Type": "text/plain", ...CORS } });
 }
 
 // ---------------------------------------------------------------- router
@@ -548,6 +565,13 @@ export default {
         const r = await env.ASSETS.fetch(new Request("https://assets.internal" + ap));
         if (!r.ok) return new Response("asset missing\n", { status: 404, headers: { "Content-Type": "text/plain" } });
         return new Response(r.body, { headers: { "Content-Type": r.headers.get("Content-Type") || "text/plain", "Cache-Control": "no-store", ...CORS } });
+      }
+      if (path === "/router/commands") {
+        // download channel: returns the RSC computed for the last received report
+        const tok = url.searchParams.get("token") || "";
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+        const row = await one(env.DB, "SELECT value FROM router_state WHERE key='pending_rsc'");
+        return new Response(row ? row.value : "# no commands yet\n", { headers: { "Content-Type": "text/plain", "Cache-Control": "no-store", ...CORS } });
       }
       if (path === "/router/bootstrap") {
         // one-time installer: token-gated RSC that pulls pages + sync script from this Worker
