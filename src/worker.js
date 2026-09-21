@@ -17,7 +17,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 const SX_VERSION = "12";
 // Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
 // re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
-const PORTAL_GEN = "3";
+const PORTAL_GEN = "4";
 const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
@@ -205,6 +205,7 @@ async function seed(db) {
     site_name: "Sornix Express WiFi",
     site_description: "Fast, fair neighbourhood WiFi",
     welcome_text: "Sign in or buy a plan to get online.",
+    login_rules_text: "HOW IT WORKS\n1. Pick a plan, pay by bank transfer or card - you are connected in about a minute.\n2. Your plan runs for its full duration on this device (speed as listed).\n3. Have a voucher PIN? Use the Voucher PIN tab.\n4. Phone account: sign in with your phone number + password on any device.\n5. When your time ends you will be brought back here to re-buy in one tap.",
     support_phone: "", whatsapp_phone: "",
     outlets: "", bank_details: "",
     bank_template: "I want to buy {plan} (NGN {price}) for {identifier}. Please send bank transfer details.",
@@ -265,6 +266,18 @@ async function actOrderStatus(db, id) {
 function maskMac(m) { const p = String(m || "").split(":"); return p.length === 6 ? [p[0], p[1], "**", "**", "**", p[5]].join(":") : (m || ""); }
 
 // public: voucher PIN status + usage history (devices masked)
+// public: what has this device bought before? (welcome-back upsell on the login page)
+async function actMacHistory(db, mac) {
+  const m = normMac(mac);
+  if (!m) return err("invalid_identifier", "A MAC address is required, for example AA:BB:CC:DD:EE:FF.");
+  const rows = await q(db, "SELECT order_id,plan_id,status,created_at,expires_at FROM orders WHERE id_type='mac' AND identifier=?1 ORDER BY created_at DESC LIMIT 5", m);
+  if (!rows.length) return json({ ok: true, found: false });
+  const last = rows[0];
+  const plan = await one(db, "SELECT name,price,validity FROM plans WHERE plan_id=?1", last.plan_id);
+  const paid = rows.filter(r => r.status === "activated" || r.status === "approved").length;
+  return json({ ok: true, found: true, last_plan_id: last.plan_id, last_plan: plan ? plan.name : last.plan_id, last_status: last.status, last_expires: last.expires_at, orders: rows.length, paid_orders: paid });
+}
+
 async function actVoucherStatus(db, code) {
   const c = String(code || "").trim().toUpperCase();
   if (!/^[A-Z0-9-]{4,20}$/.test(c)) return err("invalid_code");
@@ -298,13 +311,20 @@ async function actCreateOrder(db, b) {
   if (phone && !/^\+?[0-9]{7,15}$/.test(phone)) return err("invalid_phone", "The phone number '" + phone + "' is not valid. Use digits only (for example 08031234567), or leave it blank.");
 
   let idType, identifier;
-  if (b.account_user !== undefined || b.account_pass !== undefined) {
-    const u = String(b.account_user || "").trim(), p = String(b.account_pass || "");
+  if (b.account_user !== undefined || b.account_phone !== undefined || b.account_pass !== undefined) {
+    let u = String(b.account_user || "").trim();
+    const rawPhone = String(b.account_phone || "").trim();
+    if (rawPhone) {                       // phone-number login: the number IS the account id
+      const ng = normPhoneNg(rawPhone);
+      if (!ng) return err("invalid_phone", "'" + rawPhone + "' is not a valid Nigerian phone number. Use the form 08031234567 - it becomes your sign-in ID.");
+      u = "0" + ng.slice(3);
+    }
+    const p = String(b.account_pass || "");
     if (!USER_RE.test(u)) return err("invalid_username");
     if (p.length < 4 || p.length > 32) return err("invalid_password", "Your password must be 4-32 characters - the one entered has " + p.length + ".");
     const taken = await one(db, "SELECT 1 x FROM accounts WHERE username=?1", u);
     const taken2 = await one(db, "SELECT 1 x FROM orders WHERE identifier=?1 AND id_type!='mac' AND status IN ('approved','activated')", u);
-    if (taken || taken2) return err("username_taken", "The username '" + u + "' is already taken. Pick another one.");
+    if (taken || taken2) return err("username_taken", /^0[0-9]{10}$/.test(u) ? "The phone number " + u + " already has an account. Sign in with the same phone number and your password - or choose 'This device' on that phone." : "The username '" + u + "' is already taken. Pick another one.");
     await run(db, "INSERT INTO accounts(username,pass_enc,created_at) VALUES(?1,?2,?3)", u, await encPass(this.env, p), nowIso());
     idType = "account"; identifier = u;
   } else {
@@ -821,7 +841,8 @@ async function routerSync(db, env, req) {
   }
   // portal page refresh: worker-gated by PORTAL_GEN (router globals are unreliable on this build)
   const pgRow = await one(db, "SELECT value FROM router_state WHERE key='portal_gen'");
-  if ((pgRow ? pgRow.value : "") !== PORTAL_GEN) {
+  // monotonic: a lagging edge running an older deploy must never re-push (and rewind) an older gen
+  if ((pgRow ? Number(pgRow.value) || 0 : 0) < Number(PORTAL_GEN)) {
     // NOTE: on this router /file entries carry the "flash/" prefix; a bare dst-path creates a
     // phantom entry that the hotspot web server never serves. Always target flash/hotspot/<file>.
     for (const f of PORTAL_FILES) {
@@ -1004,6 +1025,12 @@ export default {
           ':do { /tool fetch url="' + api + '/router/files/redirect.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/redirect.html" as-value; :log info "sx-bootstrap: got redirect.html" } on-error={ :log error "sx-bootstrap: FAILED redirect.html" }',
           ':do { /tool fetch url="' + api + '/router/files/status.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/status.html" as-value; :log info "sx-bootstrap: got status.html" } on-error={ :log error "sx-bootstrap: FAILED status.html" }',
           ':do { /tool fetch url="' + api + '/router/files/sx.css?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/sx.css" as-value; :log info "sx-bootstrap: got sx.css" } on-error={ :log error "sx-bootstrap: FAILED sx.css" }',
+          "# 7b) PCQ per-address fairness (heavy users cannot hog a congested link;",
+          "#     per-user speed caps still come from the hotspot profiles)",
+          ':do { /queue type add name=sx-pcq-down kind=pcq pcq-classifier=dst-address } on-error={ }',
+          ':do { /queue type add name=sx-pcq-up kind=pcq pcq-classifier=src-address } on-error={ }',
+          ':do { /queue tree add parent=wlan1 name=sx-fair-down queue=sx-pcq-down } on-error={ }',
+          ':do { /queue tree add parent=ether1 name=sx-fair-up queue=sx-pcq-up } on-error={ }',
           "# 8) first run",
           "/system script run sx-config",
           "/system script run sx-sync",
@@ -1064,6 +1091,7 @@ export default {
         if (action === "checkUsername") return await actCheckUsername(env.DB, url.searchParams.get("u"));
         if (action === "getOrderStatus") return await actOrderStatus(env.DB, url.searchParams.get("order_id"));
         if (action === "getVoucherStatus") return await actVoucherStatus(env.DB, url.searchParams.get("code"));
+        if (action === "getMacHistory") return await actMacHistory(env.DB, url.searchParams.get("mac"));
         return err("unknown_action", "Unknown API action '" + action + "'. Available: getSettings, getPlans, checkUsername, getOrderStatus, getVoucherStatus.");
       }
       // static assets (admin.html, verify.html)

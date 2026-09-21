@@ -69,6 +69,19 @@ P.dash=function(){var s=D.stats||{},box=h("div",{});
   btn("Refresh balance",chk,1),h("p",{className:"muted"},"Prepaid SMS units. Every bank-details request, customer notification and test SMS spends units from this wallet.")));
  var stuck=(D.orders||[]).filter(function(o){return o.status==="approved"&&Date.now()-new Date(o.created_at)>600000});
  if(stuck.length)box.append(h("div",{className:"card"},h("p",{className:"warn"},stuck.length+" order(s) have been approved for over 10 minutes without the router picking them up. That is a router token or scheduler problem.")));
+ var cust={};
+ (D.orders||[]).forEach(function(o){var ph=null;
+  if(/^0[789][01]\d{8}$/.test(o.identifier||""))ph=o.identifier;
+  else if(o.sms_phone){var d=String(o.sms_phone).replace(/\D/g,"");ph=(d.length===13&&d.startsWith("234"))?"0"+d.slice(3):(d.length===11?d:null)}
+  if(!ph)return;var c=cust[ph]||(cust[ph]={ph:ph,n:0,paid:0,total:0,last:""});
+  c.n++;if(o.paid_at){c.paid++;c.total+=Number(o.amount_paid||0)}
+  if((o.created_at||"")>c.last)c.last=o.created_at});
+ var cl=Object.keys(cust).map(function(k){return cust[k]}).sort(function(a,b){return a.last<b.last?1:-1}).slice(0,60);
+ box.append(h("div",{className:"card"},h("h2",{},"Customers by phone (follow-up list)"),
+  h("p",{className:"muted"},"Every order tied to a phone number - call or SMS these customers for renewals and win-backs. Phone-number logins land here automatically."),
+  cl.length?table(["Phone","Orders","Paid","Total spent","Last order"],cl.map(function(c){return h("tr",{},
+   h("td",{},h("a",{href:"tel:"+c.ph},c.ph)),h("td",{},String(c.n)),h("td",{},String(c.paid)),h("td",{},money(c.total)),
+   h("td",{},String(c.last).slice(0,10)))})):h("p",{className:"muted"},"No phone-linked orders yet.")));
  return box};
 
 // ---------------- Active users ----------------
@@ -232,7 +245,7 @@ P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"o
   btn("Send test SMS",async function(){var r=await api("adminTestSms",{phone:sf.tp.value.trim()});flash(r.ok?"Test SMS sent":(r.message||("Failed: "+(r.error||"unknown"))),!r.ok)})))};
 
 // ---------------- Branding ----------------
-P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp support number for the floating help button (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details (sent by SMS when customers request them)",1]],f={};
+P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp support number for the floating help button (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details (sent by SMS when customers request them)",1],["login_rules_text","Login-page HOW IT WORKS rules shown to customers (one rule per line)",1]],f={};
  return h("div",{className:"card"},SF.map(function(x){f[x[0]]=h(x[2]?"textarea":"input",{value:D.settings[x[0]]||"",rows:3});return h("label",{},x[1],f[x[0]])}),
   btn("Save",function(){var s={};SF.forEach(function(x){s[x[0]]=f[x[0]].value});act("saveSettings",{settings:s})},1))};
 

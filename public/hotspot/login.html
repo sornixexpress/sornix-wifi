@@ -1,6 +1,8 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sornix Express WiFi</title><link rel="stylesheet" href="sx.css"></head><body><main>
 <div id="ad" hidden><a id="adl" target="_blank" rel="noopener"><img id="adi" alt=""></a></div>
 <h1 id="title">Sornix Express WiFi</h1><p class="muted" id="welcome">Sign in or buy a plan to get online.</p>
+<p class="muted" id="rules" style="white-space:pre-line;font-size:.9rem"></p>
+<div class="card" id="wb" hidden></div>
 $(if error)<p class="err">$(error)</p>$(endif)
 <div class="tabs"><button class="on" data-t="pin">Voucher PIN</button><button data-t="usr">Username</button><button data-t="mac">Auto MAC</button></div>
 <form class="t card" id="pin" method="post" action="$(link-login-only)"><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
@@ -16,9 +18,9 @@ $(if error)<p class="err">$(error)</p>$(endif)
 <a class="fab" id="wa" href="#" hidden aria-label="WhatsApp support">💬</a>
 
 <div class="ov" id="ov" hidden><div class="card"><h2 id="mt">Order plan</h2><p class="muted" id="ms"></p>
-<div class="tabs" id="idtabs"><button class="on" data-i="dev">This device</button><button data-i="acct">Create account</button></div>
+<div class="tabs" id="idtabs"><button class="on" data-i="dev">This device</button><button data-i="acct">Phone number</button></div>
 <div id="dev-box"><input id="oid" placeholder="Username or MAC address"><p class="muted">Sign in later with the Auto MAC button.</p></div>
-<div id="acct-box" hidden><input id="ausr" placeholder="Choose a username" autocomplete="off"><input id="apw" type="password" placeholder="Choose a password (4-32 characters)" autocomplete="new-password"><p class="muted" id="unote">Use these on the Username tab from any device you like.</p></div>
+<div id="acct-box" hidden><input id="aph" type="tel" inputmode="numeric" placeholder="Phone number, e.g. 08031234567" autocomplete="tel"><input id="apw" type="password" placeholder="Password (4-32 characters)" autocomplete="new-password"><p class="muted" id="unote">First time? This creates your account - later, sign in with the same phone + password on any device.</p></div>
 <input id="oph" type="tel" placeholder="Your phone number" autocomplete="tel">
 <p id="omsg" class="err"></p>
 <button class="p" id="paynow" hidden>Pay online now</button>
@@ -68,9 +70,18 @@ q("#showall").onclick=function(){showAll=!showAll;drawPlans()};
 function boot(n){Promise.all([j(API+"?action=getSettings"),j(API+"?action=getPlans")]).then(function(a){q("#perr").textContent="";
  S=a[0].settings||{};GW=a[0].gateways||{};
  q("#title").textContent=S.site_name||"Sornix Express WiFi";if(S.welcome_text)q("#welcome").textContent=S.welcome_text;
+ if(S.login_rules_text)q("#rules").textContent=S.login_rules_text;
  var ph=String(S.whatsapp_phone||S.support_phone||"").replace(/\D/g,"");if(ph){q("#wa").href="https://wa.me/"+ph;q("#wa").hidden=false}
  var bn=(a[0].banners||[]),i=0;if(bn.length){q("#ad").hidden=false;var show=function(){var b=bn[i++%bn.length];q("#adi").src=b.image_url;if(b.link_url)q("#adl").href=b.link_url;else q("#adl").removeAttribute("href")};show();if(bn.length>1)setInterval(show,5000)}
  PLANS=a[1].plans||[];drawPlans();
+ if(MAC.indexOf("$(")===-1){fetch(API+"?action=getMacHistory&mac="+encodeURIComponent(MAC)).then(function(r){return r.json()}).then(function(hh){
+  if(hh.ok&&hh.found&&hh.paid_orders>0){var w=q("#wb");w.textContent="";w.hidden=false;
+   var ended=(hh.last_status==="revoked"||hh.last_status==="rejected")?"was removed":(hh.last_expires?"ended "+String(hh.last_expires).slice(0,10):"has ended");
+   var p=document.createElement("p");p.className="muted";p.textContent="Welcome back! Your last plan \u201C"+hh.last_plan+"\u201D "+ended+". Re-buy in one tap:";
+   var b=document.createElement("button");b.className="p";b.textContent="Re-buy "+hh.last_plan;
+   b.onclick=function(){var pl=null;PLANS.forEach(function(x){if(x.plan_id===hh.last_plan_id)pl=x});if(pl)openOrder(pl);else{p.textContent="That plan is no longer available - please pick any plan below.";b.hidden=true}};
+   w.appendChild(p);w.appendChild(b)}
+ }).catch(function(){})}
 }).catch(function(e){if(n<3){q("#perr").textContent="Retrying…";setTimeout(function(){boot(n+1)},2500);return}
  q("#perr").textContent="Could not load plans ("+(e&&e.message?e.message:e)+"). If this keeps happening, tell support the walled garden may be blocking isp.sornix.com.ng."})}
 boot(1);
@@ -78,17 +89,17 @@ boot(1);
 function liveGw(){for(var k in GW)if(GW[k]&&GW[k].enabled&&GW[k].public_key)return k;return null}
 function openOrder(p){cur=p;q("#mt").textContent=p.name+" - \u20A6"+p.price;
  q("#ms").textContent=p.validity+", "+speed(p.rate_limit)+", "+p.shared_users+" device(s)";
- q("#oid").value=MAC;q("#ausr").value="";q("#apw").value="";q("#omsg").textContent="";
+ q("#oid").value=MAC;q("#apw").value="";q("#omsg").textContent="";
  q("#done").hidden=true;q("#go").hidden=false;q("#paynow").hidden=!liveGw();q("#ov").hidden=false}
 q("#cx").onclick=function(){q("#ov").hidden=true};
 
-q("#ausr").onblur=function(){var u=this.value.trim();if(u.length<3)return;
+q("#aph").onblur=function(){var u=this.value.trim();if(!/^0[789][01]\d{8}$/.test(u)){if(u.length>3){var n2=q("#unote");n2.className="err";n2.textContent="Use a full Nigerian number, e.g. 08031234567."}return}
  j(API+"?action=checkUsername&u="+encodeURIComponent(u)).then(function(r){var n=q("#unote");
   if(!r.ok){n.className="err";n.textContent=msg(r.error,r.message)}
-  else{n.className=r.available?"ok":"err";n.textContent=r.available?"\u2713 "+u+" is available.":u+" is taken. Pick another."}}).catch(function(){})};
+  else{n.className="ok";n.textContent=r.available?"\u2713 New account: "+u+" + this password will sign you in on any device.":"This phone already has an account - use its password to sign in."}}).catch(function(){})};
 
 function order(withSms){var ph=q("#oph").value.trim(),body={action:"createOrder",plan_id:cur.plan_id,phone:ph,sms_notify:!!withSms};
- if(idmode==="acct"){body.account_user=q("#ausr").value.trim();body.account_pass=q("#apw").value}
+ if(idmode==="acct"){body.account_phone=q("#aph").value.trim();body.account_pass=q("#apw").value;if(!q("#oph").value.trim())q("#oph").value=q("#aph").value.trim()}
  else body.identifier=q("#oid").value.trim();
  return post(body)}
 
