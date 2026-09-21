@@ -746,7 +746,9 @@ export default {
         if (!ap) return new Response("unknown file\n", { status: 404, headers: { "Content-Type": "text/plain" } });
         const r = await env.ASSETS.fetch(new Request("https://assets.internal" + ap));
         if (!r.ok) return new Response("asset missing\n", { status: 404, headers: { "Content-Type": "text/plain" } });
-        return new Response(r.body, { headers: { "Content-Type": r.headers.get("Content-Type") || "text/plain", "Cache-Control": "no-store", ...CORS } });
+        // octet-stream: stops Cloudflare edge from injecting the analytics beacon script into text/html,
+        // which corrupted the router's on-flash copies (+367 bytes per page)
+        return new Response(r.body, { headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store", ...CORS } });
       }
       if (path === "/router/diag") {
         // checkpoint beacons from the imported RSC on the router
