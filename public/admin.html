@@ -31,7 +31,7 @@ function loginView(){var em=h("input",{type:"email",placeholder:"Admin email",au
   if(otp.hidden){m.textContent="Sending…";var r=await api("sendOtp",{email:em.value});if(r.ok){otp.hidden=false;em.disabled=true;b.textContent="Verify code";m.textContent="If this email is an admin, a code was sent. It lasts 5 minutes.";otp.focus()}else{m.className="err";m.textContent=r.error==="too_many_attempts"?"Too many codes requested. Wait a few minutes, then try again.":"Could not send. Try again."}}
   else{var r2=await api("verifyOtp",{email:em.value,otp:otp.value});if(r2.ok){T=r2.token;try{sessionStorage.setItem("sxt",T)}catch(e){}load()}else{m.className="err";m.textContent="Wrong or expired code. Reload this page to request a new one."}}};
  return h("div",{className:"card"},h("h2",{},"Admin sign in"),em,otp,b,m)}
-var TABS=[["dash","Dashboard"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};
+var TABS=[["dash","Dashboard"],["sessions","Active users"],["orders","Orders"],["vouchers","Vouchers"],["plans","Plans"],["gateways","Payments"],["settings","Branding and bank"],["banners","Banners"],["wl","Whitelist"],["log","Activity log"]],P={};
 function render(){var m=q("#app");m.textContent="";if(!T){m.append(loginView());return}if(!D){m.append(h("p",{className:"muted"},"Loading…"));return}
  m.append(h("div",{className:"bar noprint"},h("h1",{},(D.settings.site_name||"Sornix")+" admin"),h("button",{on:{click:out}},"Sign out")),
   h("div",{className:"tabs noprint"},TABS.map(function(t){return h("button",{className:t[0]===tab?"on":"",on:{click:function(){tab=t[0];ed=null;render()}}},t[1])})),P[tab]())}
@@ -43,7 +43,7 @@ P.dash=function(){var s=D.stats||{},box=h("div",{});
  var kpi=function(v,l){return h("div",{className:"kpi"},h("b",{},String(v)),h("span",{},l))};
  box.append(h("div",{className:"kpis"},
    kpi(s.pending||0,"Orders awaiting approval"),kpi(s.awaiting_router||0,"Approved, not yet on router"),
-   kpi(s.active||0,"Activated"),kpi(s.vouchers_unused||0,"Unused vouchers"),
+   kpi(s.active||0,"Activated"),kpi(s.sessions||0,"Online right now"),kpi(s.vouchers_unused||0,"Unused vouchers"),
    kpi(money(s.revenue_today),"Paid today"),kpi(money(s.revenue_week),"Paid this week"),kpi(money(s.revenue_month),"Paid this month")));
  var on=!!s.router_online;
  box.append(h("div",{className:"card"},h("h2",{},"Router link"),
@@ -58,6 +58,18 @@ P.dash=function(){var s=D.stats||{},box=h("div",{});
  var stuck=(D.orders||[]).filter(function(o){return o.status==="approved"&&Date.now()-new Date(o.created_at)>600000});
  if(stuck.length)box.append(h("div",{className:"card"},h("p",{className:"warn"},stuck.length+" order(s) have been approved for over 10 minutes without the router picking them up. That is a router token or scheduler problem.")));
  return box};
+
+// ---------------- Active users ----------------
+P.sessions=function(){var ss=D.sessions||[];
+ var kind=function(u){if(!u)return"";
+  var v=(D.vouchers||[]).filter(function(x){return x.code===u})[0];if(v)return"voucher "+v.code+" ("+v.status+")";
+  var o=(D.orders||[]).filter(function(x){return x.identifier===u})[0];if(o)return"order "+o.order_id+" ("+o.status+")";
+  return"account/device"};
+ return h("div",{},h("p",{className:"muted"},"Everyone logged into the hotspot right now, as reported by the router every sync (about 25 seconds). Force logout disconnects the session at the next sync; the customer can log in again while their plan or voucher is still valid."),
+  ss.length?table(["User","MAC","Since (UTC)","Type",""],ss.map(function(x){return h("tr",{},
+   h("td",{},x.user),h("td",{},x.mac||"-"),h("td",{},String(x.at||"").slice(11,19)),h("td",{},kind(x.user)),
+   h("td",{},btn("Force logout",function(){if(confirm("Disconnect "+x.user+" now?"))act("adminLogout",{user:x.user})}))}))}):
+   h("p",{className:"muted"},"Nobody is online right now."))};
 
 // ---------------- Orders ----------------
 P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_id,status:s})};
@@ -111,14 +123,24 @@ P.plans=function(){var e=ed||{plan_id:"",name:"",price:"",validity:"1d",rate_lim
    h("td",{},btn("Edit",function(){ed=p;render()}),btn("Delete",function(){if(confirm("Delete plan "+p.plan_id+"?"))act("updatePlan",{op:"delete",plan:{plan_id:p.plan_id}})})))})))};
 
 // ---------------- Payments ----------------
-P.gateways=function(){var f={};return h("div",{},h("p",{className:"muted"},"Enable a gateway and save BOTH keys. Payments are verified on the server, so a customer cannot fake a success. Leave a secret key blank to keep the saved one."),
+P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"off",value:D.settings.sms_token||"",placeholder:"Paste API-x token"}),sd:h("input",{value:D.settings.sms_sender||"Sornix"}),fee:h("input",{type:"number",value:D.settings.sms_fee||10,min:0}),bt:h("textarea",{rows:2},D.settings.sms_bank_template||""),rt:h("textarea",{rows:2},D.settings.sms_receipt_template||""),at:h("textarea",{rows:2},D.settings.sms_active_template||""),tp:h("input",{placeholder:"08031234567"})};
+ return h("div",{},h("p",{className:"muted"},"Enable a gateway and save BOTH keys. Payments are verified on the server, so a customer cannot fake a success. Leave a secret key blank to keep the saved one."),
  h("p",{className:"warn"},"The router must allow js.paystack.co, api.paystack.co, checkout.flutterwave.com and api.flutterwave.com in the hotspot walled garden, or the payment window never opens. The v8 router patch adds them."),
  D.gateways.map(function(g){var x=f[g.gateway]={en:h("input",{type:"checkbox",checked:g.enabled}),pk:h("input",{value:g.public_key,placeholder:"Public key"}),sk:h("input",{type:"password",autocomplete:"off",placeholder:g.secret_set?"Secret key saved":"Secret key"})};
   return h("div",{className:"card"},h("h2",{},g.gateway.charAt(0).toUpperCase()+g.gateway.slice(1)+(g.gateway==="monnify"?" (not wired up yet)":"")),h("label",{className:"chk"},x.en,"Enabled"),x.pk,x.sk)}),
- btn("Save gateway keys",function(){var gw={};for(var k in f)gw[k]={enabled:f[k].en.checked,public_key:f[k].pk.value.trim(),secret_key:f[k].sk.value.trim()};act("saveGatewayKeys",{gateways:gw})},1))};
+ btn("Save gateway keys",function(){var gw={};for(var k in f)gw[k]={enabled:f[k].en.checked,public_key:f[k].pk.value.trim(),secret_key:f[k].sk.value.trim()};act("saveGatewayKeys",{gateways:gw})},1),
+ h("div",{className:"card"},h("h2",{},"SMS notifications (SmartSMS Solutions)"),
+  h("p",{className:"muted"},"Customers can request your bank account number by SMS on the login page, and opt into SMS order notifications for a \u20A6"+(D.settings.sms_fee||10)+" charge added to their payment. Create an API-x token at app.smartsmssolutions.com (Developer \u2192 API tokens) and paste it here. Business activity alerts also go to your Telegram automatically."),
+  h("label",{},"API-x token",sf.tk),h("label",{},"Sender ID (exactly as approved on SmartSMS)",sf.sd),h("label",{},"SMS charge when customer opts in (NGN)",sf.fee),
+  h("label",{},"Bank-details SMS template. Tokens: {site} {bank_details} {support}",sf.bt),
+  h("label",{},"Receipt SMS template (online payment). Tokens: {site} {amount} {plan} {identifier} {validity} {order} {support}",sf.rt),
+  h("label",{},"Activation SMS template (bank transfer approved). Same tokens",sf.at),
+  btn("Save SMS settings",function(){act("saveSettings",{settings:{sms_token:sf.tk.value.trim(),sms_sender:sf.sd.value.trim(),sms_fee:sf.fee.value,sms_bank_template:sf.bt.value,sms_receipt_template:sf.rt.value,sms_active_template:sf.at.value}})},1),
+  h("label",{},"Test number",sf.tp),
+  btn("Send test SMS",async function(){var r=await api("adminTestSms",{phone:sf.tp.value.trim()});flash(r.ok?"Test SMS sent":"Failed: "+(r.error||"unknown"),!r.ok)})))};
 
 // ---------------- Branding ----------------
-P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp number for orders (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details",1],["bank_template","WhatsApp bank request message. Use {plan}, {price} and {identifier}",1]],f={};
+P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp support number for the floating help button (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details (sent by SMS when customers request them)",1]],f={};
  return h("div",{className:"card"},SF.map(function(x){f[x[0]]=h(x[2]?"textarea":"input",{value:D.settings[x[0]]||"",rows:3});return h("label",{},x[1],f[x[0]])}),
   btn("Save",function(){var s={};SF.forEach(function(x){s[x[0]]=f[x[0]].value});act("saveSettings",{settings:s})},1))};
 

@@ -35,6 +35,58 @@ function orderId() { return "SX-" + randHex(4).toUpperCase(); }
 function voucherCode() { let s = ""; const a = crypto.getRandomValues(new Uint8Array(12)); for (let i = 0; i < 12; i++) s += VOUCHER_ALPHABET[a[i] % VOUCHER_ALPHABET.length]; return s.slice(0, 4) + "-" + s.slice(4, 8) + "-" + s.slice(8); }
 function esc(s) { return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"'); }
 function profileName(planId) { return "sx_" + String(planId).replace(/[^A-Za-z0-9_]/g, "_"); }
+function normPhoneNg(s) { const d = String(s || "").replace(/\D/g, ""); if (d.startsWith("234") && d.length === 13) return d; if (d.startsWith("0") && d.length === 11) return "234" + d.slice(1); if (d.length === 10 && /^[89]/.test(d)) return "234" + d; return null; }
+const SMS_FEE_DEF = 10;
+
+// Telegram is the default notification channel for ALL business activity
+async function notify(env, text) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch("https://api.telegram.org/bot" + env.TELEGRAM_BOT_TOKEN + "/sendMessage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: String(text).slice(0, 3800) }) });
+  } catch (e) { /* never break the request for a notification */ }
+}
+
+// SmartSMS Solutions API-x (https://developer.smartsmssolutions.com/)
+async function sendSms(db, env, to, message, tag) {
+  const s = await getSettings(db);
+  const token = String(s.sms_token || "").trim();
+  if (!token) { await audit(db, "sms", "skipped", (tag || "") + " no sms_token configured"); return { ok: false, error: "sms_not_configured" }; }
+  const phone = normPhoneNg(to);
+  if (!phone) return { ok: false, error: "invalid_phone" };
+  const fd = new FormData();
+  fd.append("token", token);
+  fd.append("sender", String(s.sms_sender || "").trim() || "Sornix");
+  fd.append("to", phone);
+  fd.append("message", String(message).slice(0, 800));
+  fd.append("type", "0");       // plain text
+  fd.append("routing", "3");    // basic route, DND numbers via corporate
+  let r = null;
+  try { r = await fetch("https://app.smartsmssolutions.com/io/api/client/v1/sms/", { method: "POST", body: fd }).then(x => x.json()); }
+  catch (e) { await audit(db, "sms", "error", (tag || "") + " " + phone + " network"); return { ok: false, error: "sms_gateway_error" }; }
+  const okc = !!r && (r.code === 1000 || r.code === "1000");
+  await audit(db, "sms", okc ? "sent" : "failed", (tag || "") + " " + phone + " units=" + (r && r.units_used != null ? r.units_used : "?") + (okc ? "" : " code=" + (r && r.code) + " " + String((r && r.comment) || "").slice(0, 80)));
+  return okc ? { ok: true, units: r.units_used } : { ok: false, error: "sms_gateway_error" };
+}
+
+async function smsFee(db) { const s = await getSettings(db); const n = Number(s.sms_fee); return Number.isFinite(n) && n > 0 ? n : SMS_FEE_DEF; }
+
+async function sendOrderSms(db, env, o, kind) {
+  if (!o.sms_notify || !o.sms_phone || o.sms_sent) return;
+  const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1", o.plan_id);
+  const s = await getSettings(db);
+  const fee = o.sms_notify ? await smsFee(db) : 0;
+  const map = {
+    "{amount}": String((plan ? plan.price : 0) + fee), "{plan}": plan ? plan.name : o.plan_id,
+    "{identifier}": o.identifier, "{validity}": plan ? plan.validity : "1d", "{order}": o.order_id,
+    "{support}": s.support_phone || s.site_name || "Sornix WiFi", "{site}": s.site_name || "Sornix WiFi"
+  };
+  const tpl = kind === "receipt"
+    ? (s.sms_receipt_template || "{site}: payment of NGN {amount} received for {plan}. Login: {identifier}, valid {validity}. Order {order}. Support: {support}")
+    : (s.sms_active_template || "{site}: your {plan} plan is ACTIVE. Login: {identifier}, valid {validity}. Order {order}. Support: {support}");
+  const msg = tpl.replace(/\{(?:amount|plan|identifier|validity|order|support|site)\}/g, (m) => map[m] != null ? map[m] : m);
+  const r = await sendSms(db, env, o.sms_phone, msg, kind + ":" + o.order_id);
+  if (r.ok) await run(db, "UPDATE orders SET sms_sent=1 WHERE order_id=?1", o.order_id);
+}
 
 // account passwords are encrypted at rest (plaintext only ever leaves towards the router over HTTPS sync)
 async function encKey(env) { const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode((env.OTP_SALT || "dev") + "|acct-enc")); return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]); }
@@ -68,6 +120,10 @@ async function seed(db) {
     support_phone: "", whatsapp_phone: "",
     outlets: "", bank_details: "",
     bank_template: "I want to buy {plan} (NGN {price}) for {identifier}. Please send bank transfer details.",
+    sms_sender: "Sornix", sms_fee: "10", sms_token: "",
+    sms_bank_template: "{site} bank transfer details: {bank_details} Quote your order ID when paying. Support: {support}",
+    sms_receipt_template: "{site}: payment of NGN {amount} received for {plan}. Login: {identifier}, valid {validity}. Order {order}. Support: {support}",
+    sms_active_template: "{site}: your {plan} plan is ACTIVE. Login: {identifier}, valid {validity}. Order {order}. Support: {support}",
     logo_url: ""
   };
   const stmts = Object.entries(defs).map(([k, v]) => db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?1,?2)").bind(k, v));
@@ -90,6 +146,7 @@ async function audit(db, who, action, detail) {
 // ---------------------------------------------------------------- public actions
 async function actGetSettings(db) {
   const settings = await getSettings(db);
+  delete settings.sms_token; // never expose the SMS API token to the public portal
   const grows = await q(db, "SELECT gateway,enabled,public_key FROM gateways");
   const gateways = {}; grows.forEach(g => gateways[g.gateway] = { enabled: !!g.enabled, public_key: g.public_key || "" });
   const banners = await q(db, "SELECT id,image_url,link_url,sort FROM banners ORDER BY sort,id");
@@ -144,13 +201,18 @@ async function actCreateOrder(db, b) {
   }
 
   const id = orderId();
-  await run(db, "INSERT INTO orders(order_id,plan_id,id_type,identifier,phone,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'requested',?6,?7)",
-    id, plan.plan_id, idType, identifier, phone, nowIso(), nowIso());
-  await audit(db, "customer", "createOrder", id + " " + plan.plan_id + " " + idType + ":" + identifier);
-  return json({ ok: true, order_id: id, identifier });
+  const smsNotify = !!b.sms_notify;
+  const smsPhone = smsNotify ? normPhoneNg(phone) : null;
+  if (smsNotify && !smsPhone) return err("invalid_phone");
+  const fee = smsNotify ? await smsFee(db) : 0;
+  await run(db, "INSERT INTO orders(order_id,plan_id,id_type,identifier,phone,status,created_at,updated_at,sms_notify,sms_phone) VALUES(?1,?2,?3,?4,?5,'requested',?6,?7,?8,?9)",
+    id, plan.plan_id, idType, identifier, phone, nowIso(), nowIso(), smsNotify ? 1 : 0, smsPhone || "");
+  await audit(db, "customer", "createOrder", id + " " + plan.plan_id + " " + idType + ":" + identifier + (smsNotify ? " +SMS" : ""));
+  notify(this.env, "\u{1F6D2} New order " + id + " - " + plan.name + " \u20A6" + plan.price + (fee ? " +\u20A6" + fee + " SMS" : "") + " (" + idType + ": " + identifier + ")" + (phone ? " tel " + phone : ""));
+  return json({ ok: true, order_id: id, identifier, sms_fee: fee, total: plan.price + fee });
 }
 
-async function actVerifyPayment(db, b) {
+async function actVerifyPayment(db, env, b) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
   if (!o) return err("not_found");
   if (o.status !== "requested") return json({ ok: true, already: true, status: o.status });
@@ -158,6 +220,7 @@ async function actVerifyPayment(db, b) {
   const gw = await one(db, "SELECT * FROM gateways WHERE gateway=?1", gwName);
   if (!gw || !gw.enabled || !gw.secret_key) return err("gateway_disabled");
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1", o.plan_id);
+  const minAmount = (plan ? plan.price : 0) + (o.sms_notify ? await smsFee(db) : 0);
   const ref = String(b.reference || "");
   if (!ref) return err("payment_not_verified");
   const dup = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", ref);
@@ -168,14 +231,14 @@ async function actVerifyPayment(db, b) {
     if (!r || r.status !== true || !r.data) return err("payment_not_verified");
     if (r.data.status !== "success") return err("payment_not_verified");
     if (r.data.reference !== ref) return err("payment_not_verified");
-    if ((r.data.amount || 0) < (plan ? plan.price : 0) * 100) return err("amount_too_low");
+    if ((r.data.amount || 0) < minAmount * 100) return err("amount_too_low");
     if (r.data.metadata && r.data.metadata.order_id && r.data.metadata.order_id !== o.order_id) return err("reference_already_used");
   } else if (gwName === "flutterwave") {
     let r; try { r = await fetch("https://api.flutterwave.com/v3/transactions?tx_ref=" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified"); }
     const tx = r && Array.isArray(r.data) && r.data[0];
     if (!tx || tx.status !== "successful") return err("payment_not_verified");
     if (tx.tx_ref !== ref) return err("payment_not_verified");
-    if ((tx.amount || 0) < (plan ? plan.price : 0)) return err("amount_too_low");
+    if ((tx.amount || 0) < minAmount) return err("amount_too_low");
     const dup2 = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", String(tx.id));
     if (dup2) return err("reference_already_used");
   } else return err("gateway_disabled");
@@ -183,7 +246,27 @@ async function actVerifyPayment(db, b) {
   await run(db, "UPDATE orders SET status='approved',paid_via=?1,reference=?2,amount_paid=?3,paid_at=?4,updated_at=?4 WHERE order_id=?5",
     gwName, ref, plan ? plan.price : 0, nowIso(), o.order_id);
   await audit(db, gwName, "autoApprove", o.order_id + " ref " + ref);
+  notify(env, "\u{1F4B0} Paid \u20A6" + (plan ? plan.price : 0) + (o.sms_notify ? "+SMS fee" : "") + " via " + gwName + " - " + o.order_id + " (" + o.identifier + ")");
+  await sendOrderSms(db, env, o, "receipt");
   return json({ ok: true, status: "approved" });
+}
+
+// ---------------------------------------------------------------- public SMS bank-details request
+async function actRequestAccountSms(db, env, b) {
+  const phone = normPhoneNg(b.phone);
+  if (!phone) return err("invalid_phone");
+  const key = "smsreq:" + phone;
+  const row = await one(db, "SELECT * FROM otp WHERE email=?1", key);
+  if (row && row.sends >= 5 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts");
+  const s = await getSettings(db);
+  const bank = String(s.bank_details || "").trim().replace(/\s+/g, " ");
+  if (!bank) return err("bank_not_set");
+  const tpl = s.sms_bank_template || "{site} bank transfer details: {bank_details} Quote your order ID when paying. Support: {support}";
+  const msg = tpl.replace(/\{bank_details\}/gi, bank).replace(/\{site\}/gi, s.site_name || "Sornix WiFi").replace(/\{support\}/gi, s.support_phone || s.site_name || "");
+  const r = await sendSms(db, env, phone, msg, "bankreq");
+  await run(db, "INSERT INTO otp(email,code_hash,expires_at,attempts,sends,sent_at) VALUES(?1,'',0,0,?2,?3) ON CONFLICT(email) DO UPDATE SET sends=sends+1,sent_at=?3", key, row ? row.sends + 1 : 1, nowMs());
+  if (!r.ok) return err(r.error);
+  return json({ ok: true });
 }
 
 // ---------------------------------------------------------------- admin auth
@@ -252,6 +335,8 @@ async function actAdminGetAll(db, env) {
   const auditRows = await q(db, "SELECT at,who,action,detail FROM audit ORDER BY id DESC LIMIT 300");
   const rs = await one(db, "SELECT value FROM router_state WHERE key='last_seen'");
   const lastSeen = rs ? +rs.value : 0;
+  let sessions = []; try { sessions = JSON.parse((await one(db, "SELECT value FROM router_state WHERE key='active_sessions'"))?.value || "[]"); } catch { sessions = []; }
+  if (!Array.isArray(sessions)) sessions = [];
   const b = lagosBoundaries();
   const rev = async from => (await one(db, "SELECT COALESCE(SUM(COALESCE(o.amount_paid,p.price,0)),0) s FROM orders o LEFT JOIN plans p ON p.plan_id=o.plan_id WHERE o.paid_at IS NOT NULL AND o.paid_at>=?1", new Date(from).toISOString())).s;
   const stats = {
@@ -259,16 +344,40 @@ async function actAdminGetAll(db, env) {
     awaiting_router: (await one(db, "SELECT COUNT(*) c FROM orders WHERE status='approved'")).c,
     active: (await one(db, "SELECT COUNT(*) c FROM orders WHERE status='activated'")).c,
     vouchers_unused: (await one(db, "SELECT COUNT(*) c FROM vouchers WHERE status='new'")).c,
+    sessions: sessions.length,
     revenue_today: await rev(b.dayStart), revenue_week: await rev(b.weekStart), revenue_month: await rev(b.monthStart),
     router_online: lastSeen && nowMs() - lastSeen < 180e3,
     router_last_seen: lastSeen ? new Date(lastSeen).toISOString() : null,
     router_token_bad: !env.ROUTER_TOKEN || env.ROUTER_TOKEN.length < 16 || env.ROUTER_TOKEN.startsWith("AKfy"),
     salt_bad: !env.OTP_SALT || env.OTP_SALT.length < 8
   };
-  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
+  return json({ ok: true, settings, plans, vouchers, orders, banners, whitelist, audit: auditRows, stats, sessions, gateways: grows.map(g => ({ gateway: g.gateway, enabled: !!g.enabled, public_key: g.public_key || "", secret_set: !!g.secret_key })) });
 }
 
-async function actUpdateOrder(db, b, who) {
+// live hotspot sessions + force logout (queued for the next router sync tick)
+async function actAdminLogout(db, env, b, who) {
+  const user = String(b.user || "").trim();
+  if (!user || user.length > 64) return err("invalid_identifier");
+  const cmd = '/ip hotspot active remove [find where user="' + esc(user) + '"]';
+  const row = await one(db, "SELECT value FROM router_state WHERE key='pending_cmds'");
+  let pc = []; try { pc = JSON.parse(row ? row.value : "[]"); } catch { pc = []; }
+  if (!Array.isArray(pc)) pc = [];
+  pc.push(cmd);
+  await run(db, "INSERT INTO router_state(key,value) VALUES('pending_cmds',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(pc));
+  await audit(db, who, "forceLogout", user);
+  notify(env, "\u{1F44B} Force-logout queued for " + user + " by " + who);
+  return json({ ok: true });
+}
+
+async function actAdminTestSms(db, env, b, who) {
+  const phone = String(b.phone || "");
+  const s = await getSettings(db);
+  const r = await sendSms(db, env, phone, (s.site_name || "Sornix WiFi") + ": test SMS - your SMS token works.", "test");
+  await audit(db, who, "testSms", phone + " -> " + (r.ok ? "ok" : r.error));
+  return r.ok ? json({ ok: true }) : err(r.error);
+}
+
+async function actUpdateOrder(db, env, b, who) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
   if (!o) return err("not_found");
   const s = String(b.status || "");
@@ -276,26 +385,32 @@ async function actUpdateOrder(db, b, who) {
   if (o.status !== "requested") return err("bad_status");
   await run(db, "UPDATE orders SET status=?1,paid_at=COALESCE(paid_at,?2),updated_at=?2,paid_via=COALESCE(paid_via,'bank') WHERE order_id=?3", s, nowIso(), o.order_id);
   await audit(db, who, "updateOrder", o.order_id + " -> " + s);
+  notify(env, (s === "approved" ? "\u2705 Approved " : "\u274C Rejected ") + o.order_id + " (" + o.identifier + ") by " + who);
+  if (s === "approved") await sendOrderSms(db, env, o, "active");
   return json({ ok: true });
 }
 
-async function actBulkOrders(db, who) {
+async function actBulkOrders(db, env, who) {
+  const pending = await q(db, "SELECT * FROM orders WHERE status='requested'");
   const r = await run(db, "UPDATE orders SET status='approved',paid_via=COALESCE(paid_via,'bank'),paid_at=COALESCE(paid_at,?1),updated_at=?1 WHERE status='requested'", nowIso());
   const n = r.meta ? r.meta.changes : 0;
   await audit(db, who, "bulkApprove", n + " orders");
+  notify(env, "\u2705 Bulk approved " + n + " orders by " + who);
+  for (const o of pending) await sendOrderSms(db, env, o, "active");
   return json({ ok: true, count: n });
 }
 
-async function actRevoke(db, b, who) {
+async function actRevoke(db, env, b, who) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
   if (!o) return err("not_found");
   if (!["approved", "activated"].includes(o.status)) return err("bad_status");
   await run(db, "UPDATE orders SET status='revoking',updated_at=?1 WHERE order_id=?2", nowIso(), o.order_id);
   await audit(db, who, "revoke", o.order_id + " " + o.identifier);
+  notify(env, "\u26D4 Revoke started " + o.order_id + " (" + o.identifier + ") by " + who);
   return json({ ok: true });
 }
 
-async function actMakeVouchers(db, b, who) {
+async function actMakeVouchers(db, env, b, who) {
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
   if (!plan) return err("invalid_plan");
   const count = Math.min(200, Math.max(1, Number(b.count) || 0));
@@ -309,6 +424,7 @@ async function actMakeVouchers(db, b, who) {
   const stmts = codes.map(c => db.prepare("INSERT INTO vouchers(code,plan_id,status,batch,created_at) VALUES(?1,?2,'new',?3,?4)").bind(c, plan.plan_id, batch, nowIso()));
   await db.batch(stmts);
   await audit(db, who, "makeVouchers", count + " x " + plan.plan_id + " batch " + batch);
+  notify(env, "\u{1F39F} " + codes.length + " vouchers created for " + plan.name + " (batch " + batch + ") by " + who);
   return json({ ok: true, codes, plan: plan.name, price: plan.price, batch });
 }
 
@@ -412,6 +528,9 @@ async function actDiag(db, env) {
   const gws = await q(db, "SELECT gateway,enabled,secret_key FROM gateways WHERE enabled=1");
   gws.forEach(g => checks.push({ name: g.gateway + " secret key saved", ok: !!g.secret_key }));
   checks.push({ name: "OTP delivery configured", ok: !!(env.RESEND_API_KEY || env.TELEGRAM_BOT_TOKEN), note: "until then codes print to wrangler tail / Logs" });
+  checks.push({ name: "Telegram activity notifications", ok: !!(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID), note: "set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets" });
+  checks.push({ name: "SMS token configured", ok: !!String(s.sms_token || "").trim(), note: "admin > Payments > SMS section (SmartSMS Solutions API-x token)" });
+  checks.push({ name: "Bank details for SMS requests", ok: !!String(s.bank_details || "").trim(), note: "admin > Branding and bank" });
   return json({ ok: true, checks });
 }
 
@@ -437,6 +556,7 @@ async function routerSync(db, env, req) {
   const t = nowIso();
   await run(db, "INSERT INTO router_state(key,value) VALUES('last_seen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", String(nowMs()));
   await run(db, "INSERT INTO router_state(key,value) VALUES('version',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.version || "unknown");
+  await run(db, "INSERT INTO router_state(key,value) VALUES('active_sessions',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.active.map(a => ({ user: a.user, mac: a.mac, at: t }))));
 
   const haveU = new Set(rep.users), haveB = new Set(rep.bypass);
 
@@ -447,6 +567,7 @@ async function routerSync(db, env, req) {
       const plan = await one(db, "SELECT validity FROM plans WHERE plan_id=?1", v.plan_id);
       await run(db, "UPDATE vouchers SET status='used',used_by=?1,used_at=?2,expires_at=?3 WHERE code=?4", a.mac, t, addValidity(t, plan ? plan.validity : "1d"), v.code);
       await audit(db, "router", "voucherUsed", v.code + " by " + a.mac);
+      notify(env, "\u{1F39F} Voucher " + v.code + " just logged in (" + a.mac + ")");
     }
   }
   // 2. approved orders present on router -> activated
@@ -456,11 +577,12 @@ async function routerSync(db, env, req) {
       const plan = await one(db, "SELECT validity FROM plans WHERE plan_id=?1", o.plan_id);
       await run(db, "UPDATE orders SET status='activated',activated_at=?1,expires_at=?2,updated_at=?1 WHERE order_id=?3", t, addValidity(t, plan ? plan.validity : "1d"), o.order_id);
       await audit(db, "router", "activated", o.order_id + " " + name);
+      notify(env, "\u{1F7E2} Live on router: " + o.order_id + " (" + name + ")");
     }
   }
   // revoking orders whose router user is gone -> revoked
   for (const o of await q(db, "SELECT * FROM orders WHERE status='revoking'")) {
-    if (!haveU.has(o.identifier)) { await run(db, "UPDATE orders SET status='revoked',updated_at=?1 WHERE order_id=?2", t, o.order_id); await audit(db, "router", "revoked", o.order_id); }
+    if (!haveU.has(o.identifier)) { await run(db, "UPDATE orders SET status='revoked',updated_at=?1 WHERE order_id=?2", t, o.order_id); await audit(db, "router", "revoked", o.order_id); notify(env, "\u26D4 Revoked on router: " + o.order_id + " (" + o.identifier + ")"); }
   }
 
   // 3. desired state
@@ -512,6 +634,14 @@ async function routerSync(db, env, req) {
     out.push(':local la ""');
     out.push(':foreach i in=[/log find] do={ :if ([:len $la] < 700) do={ :set $la (([/log get $i topics] . ": " . [/log get $i message] . " << ") . $la) } }');
     out.push(':do { ' + beaconRawBody('"LOGTAIL: " . $la') + ' } on-error={ }');
+  }
+  // queued one-shot admin commands (force logouts etc.)
+  const pcRow = await one(db, "SELECT value FROM router_state WHERE key='pending_cmds'");
+  let pc = []; try { pc = JSON.parse(pcRow ? pcRow.value : "[]"); } catch { pc = []; }
+  if (Array.isArray(pc) && pc.length) {
+    out.push("# queued admin commands");
+    pc.forEach(c => out.push(':do { ' + c + ' } on-error={ }'));
+    await run(db, "DELETE FROM router_state WHERE key='pending_cmds'");
   }
   const neededProfiles = new Set();
   desired.forEach(d => neededProfiles.add(d.plan));
@@ -686,7 +816,8 @@ export default {
           const action = String(b.action || "");
           // public
           if (action === "createOrder") return await actCreateOrder.call({ env }, env.DB, b);
-          if (action === "verifyPayment") return await actVerifyPayment(env.DB, b);
+          if (action === "verifyPayment") return await actVerifyPayment(env.DB, env, b);
+          if (action === "requestAccountSms") return await actRequestAccountSms(env.DB, env, b);
           if (action === "sendOtp") return await actSendOtp(env.DB, env, b);
           if (action === "verifyOtp") return await actVerifyOtp(env.DB, env, b);
           // admin
@@ -696,10 +827,12 @@ export default {
             switch (action) {
               case "adminGetAll": return await actAdminGetAll(env.DB, env);
               case "adminDiag": return await actDiag(env.DB, env);
-              case "updateOrder": return await actUpdateOrder(env.DB, b, who);
-              case "bulkOrders": return await actBulkOrders(env.DB, who);
-              case "revokeAccess": return await actRevoke(env.DB, b, who);
-              case "makeVouchers": return await actMakeVouchers(env.DB, b, who);
+              case "updateOrder": return await actUpdateOrder(env.DB, env, b, who);
+              case "bulkOrders": return await actBulkOrders(env.DB, env, who);
+              case "revokeAccess": return await actRevoke(env.DB, env, b, who);
+              case "makeVouchers": return await actMakeVouchers(env.DB, env, b, who);
+              case "adminLogout": return await actAdminLogout(env.DB, env, b, who);
+              case "adminTestSms": return await actAdminTestSms(env.DB, env, b, who);
               case "updateVoucher": return await actUpdateVoucher(env.DB, b, who);
               case "updatePlan": return await actUpdatePlan(env.DB, b, who);
               case "saveGatewayKeys": return await actSaveGateways(env.DB, b, who);

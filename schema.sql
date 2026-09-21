@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_at   TEXT NOT NULL,
   paid_at      TEXT,
   activated_at TEXT,
-  expires_at   TEXT                -- when the router user must be removed
+  expires_at   TEXT,               -- when the router user must be removed
+  sms_notify   INTEGER NOT NULL DEFAULT 0,   -- customer opted into SMS updates (+sms_fee)
+  sms_phone    TEXT NOT NULL DEFAULT '',      -- normalized 234... number for SMS updates
+  sms_sent     INTEGER NOT NULL DEFAULT 0     -- receipt/activation SMS already sent
 );
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_ident  ON orders(identifier);
