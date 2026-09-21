@@ -194,3 +194,23 @@ curl -X POST --data "U TEST-CODE" "http://127.0.0.1:8787/router/sync?token=devto
 - **Live sessions + force logout:** the router reports logged-in hotspot sessions every sync tick
   (`router_state.active_sessions`); **admin → Active users** lists them and queues
   `/ip hotspot active remove` commands in `router_state.pending_cmds`, drained into the next sync RSC.
+
+## 10. Live payment webhooks (Paystack + Flutterwave V3)
+
+Online payments approve themselves twice over: the portal calls `verifyPayment` after checkout, and the
+gateways also POST to live webhooks, so a payment still lands if the customer closes the payment window
+or loses the captive-portal page mid-checkout.
+
+- `POST /webhooks/paystack` — verifies `x-paystack-signature` (HMAC-SHA512 of the raw body with the
+  Paystack **secret key** saved in admin → Payments). Handles `charge.success`.
+- `POST /webhooks/flutterwave` — verifies the `verif-hash` header against `settings.flw_webhook_hash`
+  (admin → Payments → "Live payment webhooks"; falls back to the Flutterwave secret key if the hash is
+  blank), then **re-verifies the transaction against the live V3 API** before approving.
+  Handles `charge.completed` with `data.status = "successful"`.
+- Both funnels into one idempotent settle path (`markApproved`): state check, unique-reference check,
+  minimum-amount check (plan price + SMS fee when opted in), then approve + Telegram alert + receipt SMS.
+- Dashboard setup: Paystack → Settings → Webhooks → `https://isp.sornix.com.ng/webhooks/paystack`.
+  Flutterwave → Settings → Webhooks → `https://isp.sornix.com.ng/webhooks/flutterwave`, and copy the
+  secret hash you choose into admin → Payments.
+- NOTE: online verification (client and webhook) requires the gateway SECRET keys saved in admin →
+  Payments. With an empty secret key the portal hides "Pay online now" and webhooks answer 400.

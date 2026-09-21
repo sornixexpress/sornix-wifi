@@ -105,6 +105,75 @@ function lagosBoundaries() {
   return { dayStart, weekStart, monthStart };
 }
 
+// ---------------------------------------------------------------- payment webhooks (live)
+async function hmacHex(secret, data, hash) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return hex(sig);
+}
+
+// idempotent settle shared by client verify and live webhooks
+async function markApproved(db, env, o, gwName, ref, amountMajor, tag) {
+  if (!o) return { ok: false, reason: "unknown_order" };
+  if (o.status !== "requested") return { ok: false, reason: "already_" + o.status, already: true };
+  const dup = await one(db, "SELECT 1 x FROM orders WHERE reference=?1 AND order_id!=?2", ref, o.order_id);
+  if (dup) return { ok: false, reason: "reference_already_used" };
+  const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1", o.plan_id);
+  const minAmount = (plan ? plan.price : 0) + (o.sms_notify ? await smsFee(db) : 0);
+  if (!(amountMajor >= minAmount)) return { ok: false, reason: "amount_too_low" };
+  await run(db, "UPDATE orders SET status='approved',paid_via=?1,reference=?2,amount_paid=?3,paid_at=?4,updated_at=?4 WHERE order_id=?5 AND status='requested'",
+    gwName, ref, amountMajor, nowIso(), o.order_id);
+  await audit(db, gwName, tag || "webhookApprove", o.order_id + " ref " + ref);
+  notify(env, "\u{1F4B0} " + (tag === "autoApprove" ? "Paid" : "Webhook") + ": \u20A6" + amountMajor + " via " + gwName + " - " + o.order_id + " (" + o.identifier + ")");
+  await sendOrderSms(db, env, o, "receipt");
+  return { ok: true };
+}
+
+async function handlePaystackWebhook(db, env, req) {
+  const raw = await req.text();
+  const sig = req.headers.get("x-paystack-signature") || "";
+  const gw = await one(db, "SELECT * FROM gateways WHERE gateway='paystack'");
+  if (!gw || !gw.secret_key) return new Response("gateway not configured", { status: 400 });
+  const calc = await hmacHex(gw.secret_key, raw, "SHA-512");
+  if (!safeEq(calc, sig)) return new Response("bad signature", { status: 400 });
+  let b = {}; try { b = JSON.parse(raw); } catch { return new Response("bad json", { status: 400 }); }
+  if (b.event !== "charge.success") return json({ ok: true, ignored: b.event });
+  const d = b.data || {};
+  const ref = String(d.reference || "");
+  const oid = String((d.metadata && d.metadata.order_id) || ref.slice(0, 11)).toUpperCase();
+  const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", oid);
+  const r = await markApproved(db, env, o, "paystack", ref, (d.amount || 0) / 100);
+  return json({ ok: true, result: r.reason || "approved" });
+}
+
+async function handleFlutterwaveWebhook(db, env, req) {
+  const raw = await req.text();
+  const hash = req.headers.get("verif-hash") || "";
+  const s = await getSettings(db);
+  const gw = await one(db, "SELECT * FROM gateways WHERE gateway='flutterwave'");
+  const expected = String(s.flw_webhook_hash || "").trim() || (gw && gw.secret_key) || "";
+  if (!expected || !safeEq(expected, hash)) return new Response("bad verif-hash", { status: 400 });
+  let b = {}; try { b = JSON.parse(raw); } catch { return new Response("bad json", { status: 400 }); }
+  if (b.event !== "charge.completed") return json({ ok: true, ignored: b.event });
+  const d = b.data || {};
+  if (d.status !== "successful") return json({ ok: true, ignored: d.status });
+  const ref = String(d.tx_ref || "");
+  const oid = String((d.meta && d.meta.order_id) || ref.slice(0, 11)).toUpperCase();
+  let amount = Number(d.amount || 0);
+  // re-verify with the live API before trusting the event
+  if (gw && gw.secret_key && d.id) {
+    try {
+      const v = await fetch("https://api.flutterwave.com/v3/transactions/" + encodeURIComponent(d.id) + "/verify", { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json());
+      if (!v || v.status !== "success" || !v.data || v.data.status !== "successful") return json({ ok: true, result: "verify_failed" });
+      if (v.data.tx_ref !== ref) return json({ ok: true, result: "ref_mismatch" });
+      amount = Number(v.data.amount || amount);
+    } catch (e) { return json({ ok: true, result: "verify_unreachable" }); }
+  }
+  const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", oid);
+  const r = await markApproved(db, env, o, "flutterwave", ref, amount);
+  return json({ ok: true, result: r.reason || "approved" });
+}
+
 // ---------------------------------------------------------------- db helpers
 const q = (db, sql, ...args) => db.prepare(sql).bind(...args).all().then(r => r.results);
 const one = (db, sql, ...args) => db.prepare(sql).bind(...args).first();
@@ -225,6 +294,7 @@ async function actVerifyPayment(db, env, b) {
   if (!ref) return err("payment_not_verified");
   const dup = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", ref);
   if (dup) return err("reference_already_used");
+  let paidMajor = 0;
 
   if (gwName === "paystack") {
     let r; try { r = await fetch("https://api.paystack.co/transaction/verify/" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified"); }
@@ -233,21 +303,20 @@ async function actVerifyPayment(db, env, b) {
     if (r.data.reference !== ref) return err("payment_not_verified");
     if ((r.data.amount || 0) < minAmount * 100) return err("amount_too_low");
     if (r.data.metadata && r.data.metadata.order_id && r.data.metadata.order_id !== o.order_id) return err("reference_already_used");
+    paidMajor = (r.data.amount || 0) / 100;
   } else if (gwName === "flutterwave") {
     let r; try { r = await fetch("https://api.flutterwave.com/v3/transactions?tx_ref=" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified"); }
     const tx = r && Array.isArray(r.data) && r.data[0];
     if (!tx || tx.status !== "successful") return err("payment_not_verified");
     if (tx.tx_ref !== ref) return err("payment_not_verified");
     if ((tx.amount || 0) < minAmount) return err("amount_too_low");
+    paidMajor = Number(tx.amount || 0);
     const dup2 = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", String(tx.id));
     if (dup2) return err("reference_already_used");
   } else return err("gateway_disabled");
 
-  await run(db, "UPDATE orders SET status='approved',paid_via=?1,reference=?2,amount_paid=?3,paid_at=?4,updated_at=?4 WHERE order_id=?5",
-    gwName, ref, plan ? plan.price : 0, nowIso(), o.order_id);
-  await audit(db, gwName, "autoApprove", o.order_id + " ref " + ref);
-  notify(env, "\u{1F4B0} Paid \u20A6" + (plan ? plan.price : 0) + (o.sms_notify ? "+SMS fee" : "") + " via " + gwName + " - " + o.order_id + " (" + o.identifier + ")");
-  await sendOrderSms(db, env, o, "receipt");
+  const res = await markApproved(db, env, o, gwName, ref, paidMajor, "autoApprove");
+  if (!res.ok && !res.already) return err(res.reason || "payment_not_verified");
   return json({ ok: true, status: "approved" });
 }
 
@@ -732,6 +801,8 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      if (path === "/webhooks/paystack" && req.method === "POST") return await handlePaystackWebhook(env.DB, env, req);
+      if (path === "/webhooks/flutterwave" && req.method === "POST") return await handleFlutterwaveWebhook(env.DB, env, req);
       if (path === "/router/files/" || path.startsWith("/router/files/")) {
         // token-gated file delivery THROUGH the worker (immune to edge asset propagation lag)
         const tok = url.searchParams.get("token") || "";
