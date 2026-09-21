@@ -17,7 +17,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 const SX_VERSION = "12";
 // Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
 // re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
-const PORTAL_GEN = "4";
+const PORTAL_GEN = "5";
 const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
@@ -266,6 +266,23 @@ async function actOrderStatus(db, id) {
 function maskMac(m) { const p = String(m || "").split(":"); return p.length === 6 ? [p[0], p[1], "**", "**", "**", p[5]].join(":") : (m || ""); }
 
 // public: voucher PIN status + usage history (devices masked)
+// public: voucher PIN login requires a phone number - record it for follow-up
+async function actRegisterVoucherPhone(db, b) {
+  const c = String(b.code || "").trim().toUpperCase();
+  if (!/^[A-Z0-9-]{4,20}$/.test(c)) return err("invalid_code");
+  const ng = normPhoneNg(b.phone);
+  if (!ng) return err("invalid_phone", "'" + String(b.phone || "").trim() + "' is not a valid Nigerian phone number. Use the form 08031234567 - we need it to reach you about your service.");
+  const phone = "0" + ng.slice(3);
+  const v = await one(db, "SELECT code,status,phone FROM vouchers WHERE code=?1", c);
+  if (!v) return err("not_found", "No voucher with PIN '" + c + "' exists. Check the characters on your slip.");
+  if (v.status === "deleted") return err("not_found", "Voucher '" + c + "' was deleted and cannot be used.");
+  if (!v.phone) {
+    await run(db, "UPDATE vouchers SET phone=?1 WHERE code=?2", phone, c);
+    await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'phone',?3)", c, nowIso(), phone);
+  }
+  return json({ ok: true, recorded: !v.phone });
+}
+
 // public: what has this device bought before? (welcome-back upsell on the login page)
 async function actMacHistory(db, mac) {
   const m = normMac(mac);
@@ -299,9 +316,10 @@ async function actVoucherStatus(db, code) {
 // admin: full unmasked usage history for one voucher
 async function actAdminVoucherHistory(db, b, who) {
   const c = String(b.code || "").trim().toUpperCase();
+  const v = await one(db, "SELECT phone,status FROM vouchers WHERE code=?1", c);
   const sessions = await q(db, "SELECT mac,first_seen,last_seen FROM voucher_sessions WHERE code=?1 ORDER BY first_seen", c);
   const events = await q(db, "SELECT at,event,detail FROM voucher_events WHERE code=?1 ORDER BY id", c);
-  return json({ ok: true, code: c, sessions, events });
+  return json({ ok: true, code: c, phone: v ? v.phone : null, sessions, events });
 }
 
 async function actCreateOrder(db, b) {
@@ -1052,6 +1070,7 @@ export default {
           if (action === "createOrder") return await actCreateOrder.call({ env }, env.DB, b);
           if (action === "verifyPayment") return await actVerifyPayment(env.DB, env, b);
           if (action === "requestAccountSms") return await actRequestAccountSms(env.DB, env, b);
+          if (action === "registerVoucherPhone") return await actRegisterVoucherPhone(env.DB, b);
           if (action === "sendOtp") return await actSendOtp(env.DB, env, b);
           if (action === "verifyOtp") return await actVerifyOtp(env.DB, env, b);
           // admin

@@ -175,6 +175,7 @@ P.vouchers=function(){var plans=D.plans.filter(function(p){return p.active}),
   api("adminVoucherHistory",{code:code}).then(function(r){histBox.textContent="";
    if(!r.ok){histBox.append(h("p",{className:"err"},r.message||("Failed: "+(r.error||"unknown"))));return}
    histBox.append(h("div",{className:"card"},h("h2",{},"Usage history \u2014 "+code),
+    h("p",{className:r.phone?"ok":"warn"},"Phone on record: "+(r.phone?r.phone:"none captured")),
     h("h3",{},"Device sessions"),
     r.sessions.length?table(["MAC","First seen","Last seen"],r.sessions.map(function(s){return h("tr",{},h("td",{},s.mac),h("td",{},String(s.first_seen).slice(0,16).replace("T"," ")),h("td",{},String(s.last_seen).slice(0,16).replace("T"," ")))})):h("p",{className:"muted"},"Never logged in."),
     h("h3",{},"Events"),
@@ -183,12 +184,12 @@ P.vouchers=function(){var plans=D.plans.filter(function(p){return p.active}),
  var drawList=function(){vwrap.textContent="";var fl=vfs.value;
   var rows=list.filter(function(v){var st=state(v);
    if(fl==="all")return true;if(fl==="online")return!!online[v.code];return st===fl});
-  vwrap.append(rows.length?table(["Code","Plan","State","Used by","First login","Expires","Batch",""],rows.map(function(v){var st=state(v);
+  vwrap.append(rows.length?table(["Code","Plan","State","Phone","Used by","First login","Expires","Batch",""],rows.map(function(v){var st=state(v);
    return h("tr",{},
     h("td",{},v.code),h("td",{},v.plan_id),
     h("td",{className:st==="active"?"s-new":st==="exhausted"?"s-revoked":st==="new"?"s-approved":"s-used"},
      (st==="new"?"Unused":st==="active"?"Used \u00B7 active window":st==="exhausted"?"Exhausted":st==="deleted"?"Deleted":st)+(online[v.code]?" \u00B7 ONLINE":"")),
-    h("td",{},v.used_by||"-"),h("td",{},String(v.used_at||"").slice(0,16).replace("T"," ")||"-"),
+    h("td",{},v.phone?h("a",{href:"tel:"+v.phone},v.phone):"-"),h("td",{},v.used_by||"-"),h("td",{},String(v.used_at||"").slice(0,16).replace("T"," ")||"-"),
     h("td",{},String(v.expires_at||"").slice(0,16).replace("T"," ")||"-"),h("td",{},v.batch||"-"),
     h("td",{className:"noprint"},btn("History",function(){showHist(v.code)}),
      v.status!=="deleted"?btn("Delete",function(){if(confirm("Delete voucher "+v.code+"? It stops working after the next sync."))act("updateVoucher",{op:"delete",code:v.code})}):null))})):

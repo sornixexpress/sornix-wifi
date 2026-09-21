@@ -6,7 +6,10 @@
 $(if error)<p class="err">$(error)</p>$(endif)
 <div class="tabs"><button class="on" data-t="pin">Voucher PIN</button><button data-t="usr">Username</button><button data-t="mac">Auto MAC</button></div>
 <form class="t card" id="pin" method="post" action="$(link-login-only)"><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
-<input name="username" placeholder="Enter voucher PIN" autocomplete="off" autocapitalize="characters" required><input type="hidden" name="password"><button class="p">Connect</button></form>
+<input name="username" placeholder="Enter voucher PIN" autocomplete="off" autocapitalize="characters" required>
+<input id="vph" type="tel" inputmode="numeric" placeholder="Your phone number (required)" autocomplete="tel" required>
+<p class="muted" style="font-size:.85rem">We keep your number only to reach you about your service.</p>
+<p id="vmsg" class="err"></p><button class="p" id="pinbtn">Connect</button></form>
 <form class="t card" id="usr" method="post" action="$(link-login-only)" hidden><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
 <input name="username" placeholder="Username" autocomplete="username" required><input name="password" type="password" placeholder="Password" autocomplete="current-password"><button class="p">Connect</button></form>
 <form class="t card" id="mac" method="post" action="$(link-login-only)" hidden><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
@@ -51,7 +54,19 @@ var ERRS={invalid_identifier:"Enter a valid username or MAC address.",invalid_us
 var msg=function(e,m){return m||ERRS[e]||"Something went wrong ("+String(e||"unknown")+") - try again, or contact support with your order ID.";};
 
 qa(".tabs button[data-t]").forEach(function(b){b.onclick=function(){qa(".tabs button[data-t]").forEach(function(x){x.classList.toggle("on",x===b)});qa("form.t").forEach(function(f){f.hidden=f.id!==b.dataset.t})}});
-q("#pin").onsubmit=function(){var f=this;f.username.value=f.username.value.trim().toUpperCase();f.password.value=f.username.value};
+q("#pin").onsubmit=function(ev){var f=this,m=q("#vmsg");m.textContent="";
+ var pin=f.username.value.trim().toUpperCase();f.username.value=pin;
+ var ph=q("#vph").value.trim();
+ if(!/^[A-Z0-9-]{4,20}$/.test(pin)){m.textContent="Enter the voucher PIN exactly as printed, e.g. AB12-CD34-EF56.";return false}
+ if(!/^0[789][01]\d{8}$/.test(ph)){m.textContent="Enter your full Nigerian phone number, e.g. 08031234567 - it is required to use a voucher.";return false}
+ ev.preventDefault();
+ var b=q("#pinbtn");b.disabled=true;m.className="muted";m.textContent="Registering your number\u2026";
+ fetch(API,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"registerVoucherPhone",code:pin,phone:ph})})
+  .then(function(r){return r.json()}).then(function(r){
+   if(r.ok){f.password.value=pin;f.submit();return}
+   b.disabled=false;m.className="err";m.textContent=msg(r.error,r.message)}).catch(function(){
+   b.disabled=false;m.className="err";m.textContent="Cannot reach the server to register your number. Check your connection and press Connect again."});
+ return false};
 qa("#idtabs button").forEach(function(b){b.onclick=function(){idmode=b.dataset.i;qa("#idtabs button").forEach(function(x){x.classList.toggle("on",x===b)});q("#dev-box").hidden=idmode!=="dev";q("#acct-box").hidden=idmode!=="acct"}});
 function speed(r){var p=String(r).split("/");return "↓"+(p[1]||"?")+" ↑"+(p[0]||"?")}
 

@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS vouchers (
   batch      TEXT,
   created_at TEXT NOT NULL,
   used_at    TEXT,
-  expires_at TEXT
+  expires_at TEXT,
+  phone      TEXT                  -- customer phone captured at voucher login (follow-up)
 );
 CREATE INDEX IF NOT EXISTS idx_vouch_status ON vouchers(status);
 
