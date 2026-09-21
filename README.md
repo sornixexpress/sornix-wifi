@@ -237,3 +237,20 @@ or loses the captive-portal page mid-checkout.
   validity, Exhausted, Online right now, Deleted; a computed State column; per-row **History** button
   showing unmasked device sessions and all events (`adminVoucherHistory`).
 - Used vouchers past `expires_at` are swept to status `expired` (= exhausted) by the router sync loop.
+
+## 13. Router file updates - delete before fetch, version-gated
+
+- RouterOS `/tool fetch` never overwrites an existing file, so EVERY download to the router
+  (sync script, portal pages, command file) is preceded by `/file remove` of the old copy.
+- **Script self-update is version-gated**: the router reports its script version (`S 12` line in
+  each sync report) and the worker pushes a new script only when it differs from `SX_VERSION` in
+  `src/worker.js`. When you edit `public/mikrotik/sx-sync.rsc`, bump BOTH the `S <n>` line in the
+  script and `SX_VERSION` in the worker.
+- **Portal pages are worker-gated**: whenever `PORTAL_GEN` in `src/worker.js` changes, the next sync
+  pushes a one-shot delete + re-download of all 7 hotspot files, ending with a `PORTALSZ-<sizes>`
+  beacon recorded in rdiag - compare it with `wc -c public/hotspot/*` to verify byte-exact copies.
+  Bump `PORTAL_GEN` whenever you edit anything in `public/hotspot/`.
+- RouterOS 7.24.4 quirk found while building this: script globals do NOT persist between scheduler
+  runs (`sxTick` stayed 1 forever), so the old "refresh every 720 ticks" never worked and, once the
+  refresh could actually succeed, re-downloaded pages every tick. Never gate logic on script
+  globals; all gating lives worker-side (SX_VERSION / PORTAL_GEN).

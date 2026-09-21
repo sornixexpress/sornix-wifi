@@ -12,6 +12,13 @@
  */
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400" };
+// Bump this AND the "S <n>" line in public/mikrotik/sx-sync.rsc together whenever the script changes:
+// the router only re-downloads the script when its reported version differs (self-update is version-gated).
+const SX_VERSION = "12";
+// Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
+// re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
+const PORTAL_GEN = "2";
+const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
 const USER_RE = /^[A-Za-z0-9._-]{3,32}$/;
@@ -699,7 +706,7 @@ async function actDiag(db, env) {
 
 // ---------------------------------------------------------------- router sync
 function parseReport(text) {
-  const users = [], active = [], bypass = [], stations = [], leases = []; let version = "", nline = ""; let g = null;
+  const users = [], active = [], bypass = [], stations = [], leases = []; let version = "", nline = "", sxver = "", sxtick = ""; let g = null;
   String(text || "").split("\n").forEach(line => {
     const p = line.trim().split(/\s+/);
     if (p[0] === "U" && p[1]) users.push(p[1]);
@@ -708,10 +715,12 @@ function parseReport(text) {
     else if (p[0] === "W" && p[1]) stations.push({ mac: normMac(p[1]) || p[1], signal: p[2] || "", uptime: p.slice(3).join(" ") });
     else if (p[0] === "L" && p[1]) leases.push({ mac: normMac(p[1]) || p[1], ip: p[2] || "", host: p.slice(3).join(" ") });
     else if (p[0] === "G" && p.length >= 3) g = { ssid: p.slice(1, -2).join(" "), freq: p[p.length - 2], psk: p[p.length - 1] === "true", at: nowIso() };
+    else if (p[0] === "S") sxver = p[1] || "";
+    else if (p[0] === "T") sxtick = p[1] || "";
     else if (p[0] === "V") version = p.slice(1).join(" ");
     else if (p[0] === "N") nline = p.slice(1).join(" ");
   });
-  return { users, active, bypass, version, nline, stations, leases, g };
+  return { users, active, bypass, version, nline, sxver, sxtick, stations, leases, g };
 }
 
 async function routerSync(db, env, req) {
@@ -722,6 +731,8 @@ async function routerSync(db, env, req) {
   const t = nowIso();
   await run(db, "INSERT INTO router_state(key,value) VALUES('last_seen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", String(nowMs()));
   await run(db, "INSERT INTO router_state(key,value) VALUES('version',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.version || "unknown");
+  if (rep.sxver) await run(db, "INSERT INTO router_state(key,value) VALUES('sxver',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.sxver);
+  if (rep.sxtick) await run(db, "INSERT INTO router_state(key,value) VALUES('sxtick',?1) ON CONFLICT(key) DO UPDATE SET value=?1", rep.sxtick);
   await run(db, "INSERT INTO router_state(key,value) VALUES('active_sessions',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.active.map(a => ({ user: a.user, mac: a.mac, at: t }))));
   await run(db, "INSERT INTO router_state(key,value) VALUES('wifi_clients',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ stations: rep.stations, leases: rep.leases, at: t }));
   if (rep.g) await run(db, "INSERT INTO router_state(key,value) VALUES('wifi_info',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify(rep.g));
@@ -794,17 +805,30 @@ async function routerSync(db, env, req) {
   const missingEarly = [...desired.keys()].filter(n => !haveU.has(n));
   const apiBase = env.PUBLIC_ORIGIN || "https://isp.sornix.com.ng";
   const out = ["# Sornix sync generated " + t + " (router " + (rep.version || "?") + ") - do not edit",
-    "# self-update: keep the on-router sync script identical to the repo copy",
-    '/file remove [find where name="sx-sync-new.rsc"]',
-    ':do { /tool fetch url="' + apiBase + '/router/files/sx-sync.rsc?token=' + env.ROUTER_TOKEN + '" dst-path="sx-sync-new.rsc" as-value } on-error={ :log warning "sx-sync: self-update fetch failed" }',
-    ':do { /system script set [find where name="sx-sync"] source=[/file get [find where name="sx-sync-new.rsc"] contents] } on-error={ :log warning "sx-sync: self-update skipped" }'];
+    "# self-update: version-gated - only pushed when the router's script reports an older S version"];
   const beaconRaw = (m) => '/tool fetch url="' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '&m=' + m + '" http-method=post http-data="b" output=none as-value';
   const beacon = (m) => ':do { ' + beaconRaw(m) + ' } on-error={ }';
   const guarded = (cmd, tag) => ':do { ' + cmd + '; ' + beaconRaw("OK-" + tag) + ' } on-error={ ' + beaconRaw("ERR-" + tag) + ' }';
   const beaconRawDyn = (expr) => '/tool fetch url=("' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '&m=" . (' + expr + ')) http-method=post http-data="b" output=none as-value';
   const beaconRawBody = (expr) => '/tool fetch url="' + apiBase + '/router/diag?token=' + env.ROUTER_TOKEN + '" http-method=post http-data=(' + expr + ') output=none as-value';
   const dynEarly = (expr) => ':do { ' + beaconRawDyn(expr) + ' } on-error={ }';
-  out.push(beacon("ck-selfupdate"));
+  if (rep.sxver !== SX_VERSION) {
+    out.push(beacon("ck-selfupdate"));
+    out.push(
+      '/file remove [find where name="sx-sync-new.rsc"]',
+      ':do { /tool fetch url="' + apiBase + '/router/files/sx-sync.rsc?token=' + env.ROUTER_TOKEN + '" dst-path="sx-sync-new.rsc" as-value } on-error={ ' + beaconRaw("ERR-selfupdate-fetch") + ' }',
+      guarded('/system script set [find where name="sx-sync"] source=[/file get [find where name="sx-sync-new.rsc"] contents]', "selfupdate"));
+  }
+  // portal page refresh: worker-gated by PORTAL_GEN (router globals are unreliable on this build)
+  const pgRow = await one(db, "SELECT value FROM router_state WHERE key='portal_gen'");
+  if ((pgRow ? pgRow.value : "") !== PORTAL_GEN) {
+    for (const f of PORTAL_FILES) {
+      out.push(':do { /file remove [find where name="hotspot/' + f + '"] } on-error={ }');
+      out.push(':do { /tool fetch url="' + apiBase + '/router/files/' + f + '?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/' + f + '" as-value } on-error={ ' + beaconRaw("ERR-page-" + encodeURIComponent(f)) + ' }');
+    }
+    out.push(dynEarly('"PORTALSZ-login-" . [/file get [find where name="hotspot/login.html"] size] . "-alogin-" . [/file get [find where name="hotspot/alogin.html"] size] . "-error-" . [/file get [find where name="hotspot/error.html"] size] . "-logout-" . [/file get [find where name="hotspot/logout.html"] size] . "-redirect-" . [/file get [find where name="hotspot/redirect.html"] size] . "-status-" . [/file get [find where name="hotspot/status.html"] size] . "-css-" . [/file get [find where name="hotspot/sx.css"] size]'));
+    await run(db, "INSERT INTO router_state(key,value) VALUES('portal_gen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", PORTAL_GEN);
+  }
   if (missingEarly.length) {
     // state + license read-back FIRST, before anything can abort the import
     out.push(':do { ' + beaconRawDyn('"lic-" . [/system license get level] . " board-" . [/system resource get board-name] . " nusers-" . [/ip hotspot user print count-only] . " nprof-" . [/ip hotspot user profile print count-only]') + ' } on-error={ }');
@@ -949,7 +973,7 @@ export default {
           '/system script remove [find where name="sx-config"]',
           '/system script remove [find where name="sx-sync"]',
           '/ip hotspot walled-garden remove [find where comment="sx"]',
-          ':foreach f in={sxboot.rsc;sxcmd.rsc;sxrep.txt;sx-sync.rsc;sx-sync-new.rsc;t1.txt;t2.txt;t3.txt;t4.txt;t5.txt;t6.txt;hotspot/t6.html} do={ /file remove [find where name=$f] }',
+          ':foreach f in={sxboot.rsc;sxcmd.rsc;sxrep.txt;sx-sync.rsc;sx-sync-new.rsc;t1.txt;t2.txt;t3.txt;t4.txt;t5.txt;t6.txt;hotspot/t6.html;hotspot/login.html;hotspot/alogin.html;hotspot/error.html;hotspot/logout.html;hotspot/redirect.html;hotspot/status.html;hotspot/sx.css} do={ /file remove [find where name=$f] }',
           "# 2) globals",
           ':global sxApi "' + api + '"',
           ':global sxTok "' + env.ROUTER_TOKEN + '"',
