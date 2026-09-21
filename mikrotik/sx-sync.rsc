@@ -63,4 +63,16 @@
   :log warning ("sx-sync: post failed (" . ($r->"status") . ") - check internet, DNS and TLS certificate store")
 }
 
+# refresh captive-portal pages from the Worker every ~5 hours (720 ticks)
+:if (($sxTick % 720) = 1) do={
+  :do { /tool fetch url=("$sxApi/router/files/login.html?token=" . $sxTok) dst-path="hotspot/login.html" as-value } on-error={ :log warning "sx-sync: page refresh login.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/alogin.html?token=" . $sxTok) dst-path="hotspot/alogin.html" as-value } on-error={ :log warning "sx-sync: page refresh alogin.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/error.html?token=" . $sxTok) dst-path="hotspot/error.html" as-value } on-error={ :log warning "sx-sync: page refresh error.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/logout.html?token=" . $sxTok) dst-path="hotspot/logout.html" as-value } on-error={ :log warning "sx-sync: page refresh logout.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/redirect.html?token=" . $sxTok) dst-path="hotspot/redirect.html" as-value } on-error={ :log warning "sx-sync: page refresh redirect.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/status.html?token=" . $sxTok) dst-path="hotspot/status.html" as-value } on-error={ :log warning "sx-sync: page refresh status.html failed" }
+  :do { /tool fetch url=("$sxApi/router/files/sx.css?token=" . $sxTok) dst-path="hotspot/sx.css" as-value } on-error={ :log warning "sx-sync: page refresh sx.css failed" }
+  :log info "sx-sync: portal pages refreshed"
+}
+
 :set sxBusy "0"

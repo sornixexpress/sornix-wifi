@@ -75,11 +75,14 @@ P.sessions=function(){var ss=D.sessions||[];
   var v=(D.vouchers||[]).filter(function(x){return x.code===u})[0];if(v)return"voucher "+v.code+" ("+v.status+")";
   var o=(D.orders||[]).filter(function(x){return x.identifier===u})[0];if(o)return"order "+o.order_id+" ("+o.status+")";
   return"account/device"};
+ var row=function(x){return h("tr",{},
+  h("td",{},x.user),
+  h("td",{},x.mac||"-"),
+  h("td",{},String(x.at||"").slice(11,19)),
+  h("td",{},kind(x.user)),
+  h("td",{},btn("Force logout",function(){if(confirm("Disconnect "+x.user+" now?"))act("adminLogout",{user:x.user})})))};
  return h("div",{},h("p",{className:"muted"},"Everyone logged into the hotspot right now, as reported by the router every sync (about 25 seconds). Force logout disconnects the session at the next sync; the customer can log in again while their plan or voucher is still valid."),
-  ss.length?table(["User","MAC","Since (UTC)","Type",""],ss.map(function(x){return h("tr",{},
-   h("td",{},x.user),h("td",{},x.mac||"-"),h("td",{},String(x.at||"").slice(11,19)),h("td",{},kind(x.user)),
-   h("td",{},btn("Force logout",function(){if(confirm("Disconnect "+x.user+" now?"))act("adminLogout",{user:x.user})}))}))}):
-   h("p",{className:"muted"},"Nobody is online right now."))};
+  ss.length?table(["User","MAC","Since (UTC)","Type",""],ss.map(row)):h("p",{className:"muted"},"Nobody is online right now."))};
 
 // ---------------- Orders ----------------
 P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_id,status:s})};
