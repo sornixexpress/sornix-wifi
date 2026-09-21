@@ -18,7 +18,12 @@ html_handling = "none"   # keep exact /admin.html and /verify.html URLs (router 
 [[d1_databases]]
 binding = "DB"
 database_name = "sornix-wifi"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "48cc0180-af39-440f-88b2-89aca4f711be"
+
+# Custom domain (zone sornix.com.ng lives in the same account)
+[[routes]]
+pattern = "isp.sornix.com.ng"
+custom_domain = true
 
 # Non-secret configuration
 [vars]
