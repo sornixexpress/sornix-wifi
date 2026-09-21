@@ -14,6 +14,6 @@ q("#st").onclick=async function(){var b=this;busy=true;b.disabled=true;q("#lat")
  try{var best=1e9;for(var i=0;i<5;i++){var s=t();await fetch(C+"down?bytes=0",{cache:"no-store"});best=Math.min(best,t()-s)}q("#lat").textContent=Math.round(best)+" ms";
   var s=t(),r=await fetch(C+"down?bytes=5000000",{cache:"no-store"}),buf=await r.arrayBuffer();q("#dl").textContent=(buf.byteLength*8/1e6/((t()-s)/1000)).toFixed(1)+" Mbps";
   s=t();await fetch(C+"up",{method:"POST",body:new Uint8Array(1e6)});q("#ul").textContent=(8/((t()-s)/1000)).toFixed(1)+" Mbps"
- }catch(e){q("#dl").textContent="Test failed"}
+ }catch(e){q("#lat").textContent="-";q("#dl").textContent="Test failed - cannot reach the speed-test server. You may be offline or the router is blocking it.";q("#ul").textContent="-"}
  busy=false;b.disabled=false;b.textContent="Run again"};
 </script></body></html>

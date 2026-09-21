@@ -7,6 +7,11 @@ if(/invalid username|invalid password/.test(e))m="That voucher, username or pass
 else if(/limit reached|expired/.test(e)&&/uptime|time|session/.test(e))m="Your plan has run out. Buy a new plan to reconnect.";
 else if(/simultaneous|already logged|shared/.test(e))m="This account is already in use on the maximum number of devices.";
 else if(/chap|challenge/.test(e))m="The sign-in handshake failed. Reload the page and try again.";
+else if(/radius|timeout|no response|unreachable/.test(e))m="The login server did not respond in time. Wait a few seconds and try again - if it keeps failing, the router may be offline; tell support.";
+else if(/not permitted|forbidden|denied/.test(e))m="This sign-in method is not allowed for your account. Use the voucher PIN or username/password you were given.";
+else if(/mac/.test(e)&&/invalid|not allowed|wrong/.test(e))m="This device's MAC address is not allowed to sign in. Choose Auto MAC on the login page, or contact support.";
+else if(/session/.test(e)&&/kill|end|terminat|clos/.test(e))m="Your session was ended by the router - someone signed in with your details elsewhere, or an admin logged you out.";
+else if(/trial/.test(e))m="The free trial is not available or already used on this device.";
 document.getElementById("m").textContent=m;
 fetch(API+"?action=getSettings").then(function(r){return r.json()}).then(function(s){var p=String((s.settings||{}).whatsapp_phone||(s.settings||{}).support_phone||"").replace(/\D/g,"");if(p){var a=document.getElementById("wa");a.href="https://wa.me/"+p+"?text="+encodeURIComponent("Sign-in problem: "+raw);a.hidden=false}}).catch(function(){});
 </script></body></html>

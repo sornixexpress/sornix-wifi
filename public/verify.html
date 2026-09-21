@@ -17,7 +17,7 @@ function show(t,d,c){q("#st").hidden=false;q("#t").textContent=t;q("#t").classNa
 function hideV(){q("#vh").hidden=true;q("#vh").textContent=""}
 function poll(){clearTimeout(timer);if(mode!=="order")return;if(document.hidden){timer=setTimeout(poll,3000);return}
  fetch(API+"?action=getOrderStatus&order_id="+encodeURIComponent(o)).then(function(r){return r.json()}).then(function(r){
-  if(!r.ok){show("Order not found","Check the order ID from your purchase.","err");return}
+  if(!r.ok){show(r.error==="not_found"?"Order not found":"Could not check this order",r.message||"Check the order ID from your purchase.","err");return}
   var m=MSG[r.status]||["Status: "+r.status,""];show(m[0],m[1],r.status==="activated"?"ok":r.status==="rejected"||r.status==="revoked"?"err":"");
   if(r.status==="requested"||r.status==="approved"){if(++tries<600)timer=setTimeout(poll,3000);else show("Still waiting","This is taking longer than usual. Contact support with your order ID.","err")}
  }).catch(function(){timer=setTimeout(poll,3000)})}
@@ -31,7 +31,7 @@ function chip(st,active){if(st==="new")return['<span class="chip c-ok">UNUSED</s
 function checkVoucher(){var c=String(q("#oid").value||"").trim().toUpperCase();if(!c){show("Enter a voucher PIN","For example AB12-CD34-EF56.","err");return}
  q("#oid").value=c;hideV();show("Checking voucher…","");
  fetch(API+"?action=getVoucherStatus&code="+encodeURIComponent(c)).then(function(r){return r.json()}).then(function(r){
-  if(!r.ok){show("Voucher not found","Check the PIN exactly as printed on your slip.","err");return}
+  if(!r.ok){show(r.error==="not_found"?"Voucher not found":"Could not check this voucher",r.message||"Check the PIN exactly as printed on your slip.","err");return}
   var ch=chip(r.status,r.active_now);show("Voucher "+r.code,ch[1],r.active_now?"ok":r.status==="new"?"ok":r.status==="deleted"||r.status==="expired"?"err":"warn");
   var box=q("#vh");box.hidden=false;box.textContent="";
   var h=document.createElement("div");h.innerHTML="<h2>"+ch[0]+" &nbsp;"+(r.plan||"")+"</h2>";box.appendChild(h);
@@ -47,7 +47,7 @@ function checkVoucher(){var c=String(q("#oid").value||"").trim().toUpperCase();i
    e.innerHTML="<tr><th>When</th><th>Event</th></tr>"+r.events.map(function(x){return"<tr><td>"+fmt(x.at)+"</td><td>"+x.event.replace("_"," ")+"</td></tr>"}).join("");
    box.appendChild(e)}
   var rb=document.createElement("button");rb.textContent="Refresh";rb.onclick=checkVoucher;box.appendChild(rb);
- }).catch(function(){show("Network error","Try again in a moment.","err")})}
+ }).catch(function(){show("Cannot reach the server","Check your Wi-Fi or internet connection, then try again.","err")})}
 q("#chk").onclick=function(){if(mode==="voucher")checkVoucher();else go(q("#oid").value)};
 q("#oid").onkeydown=function(e){if(e.key==="Enter")q("#chk").onclick()};
 function setMode(m){mode=m;q("#t-o").className=m==="order"?"on":"";q("#t-v").className=m==="voucher"?"on":"";

@@ -20,7 +20,38 @@ const RATE_RE = /^\d+[kMG]?\/\d+[kMG]?$/;
 
 // ---------------------------------------------------------------- utils
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json", ...CORS } });
-const err = (e, status = 200) => json({ ok: false, error: e }, status);
+// Every failure returns { ok:false, error:"code", message:"exact human-readable reason" }.
+const ERRMSG = {
+  invalid_username: "Usernames must be 3-32 characters: letters, numbers, dots, dashes or underscores.",
+  invalid_password: "Password must be 4-32 characters.",
+  invalid_phone: "Enter a valid phone number (digits only), for example 08031234567.",
+  invalid_code: "That does not look like a voucher PIN. PINs look like AB12-CD34-EF56.",
+  invalid_identifier: "Enter your device MAC address (AA:BB:CC:DD:EE:FF) or your existing username.",
+  username_taken: "That username is already taken. Pick another one.",
+  invalid_plan: "That plan is not available. Refresh the page and pick a current plan.",
+  not_found: "Not found.",
+  unknown_order: "That order no longer exists.",
+  payment_not_verified: "We could not confirm that payment with the payment gateway.",
+  amount_too_low: "The amount paid is less than the order total.",
+  reference_already_used: "That payment reference was already used for another order.",
+  gateway_disabled: "Online payment is not enabled right now. Use bank transfer.",
+  too_many_attempts: "Too many attempts. Wait 15 minutes and try again.",
+  bank_not_set: "Bank details are not published yet, so there is nothing to send.",
+  sms_not_configured: "The SMS service is not set up yet (no SmartSMS token saved).",
+  sms_gateway_error: "The SMS provider could not send the message right now.",
+  unauthorized: "Your admin session is missing or expired. Sign in again.",
+  unknown_action: "The server does not recognise that request.",
+  bad_json: "The request body was not valid JSON.",
+  bad_op: "That operation is not supported.",
+  bad_status: "That order is not in a state that allows this change.",
+  invalid_count: "Enter how many vouchers to create: a whole number from 1 to 200.",
+  invalid_ssid: "WiFi name must be 32 characters or fewer.",
+  invalid_psk: "WiFi password must be 8-63 characters (WPA2 requirement).",
+  nothing_to_change: "Nothing to change - fill in at least one field (WiFi name, password or channel).",
+  invalid_banner: "Banner image URL must start with https://.",
+  internal_error: "Unexpected server error."
+};
+const err = (e, message, status = 200) => json({ ok: false, error: e, message: message || ERRMSG[e] || ("Request failed (" + e + ").") }, status);
 const nowIso = () => new Date().toISOString();
 const nowMs = () => Date.now();
 
@@ -50,9 +81,9 @@ async function notify(env, text) {
 async function sendSms(db, env, to, message, tag) {
   const s = await getSettings(db);
   const token = String(s.sms_token || "").trim();
-  if (!token) { await audit(db, "sms", "skipped", (tag || "") + " no sms_token configured"); return { ok: false, error: "sms_not_configured" }; }
+  if (!token) { await audit(db, "sms", "skipped", (tag || "") + " no sms_token configured"); return { ok: false, error: "sms_not_configured", message: "SMS is not configured yet - save the SmartSMS API-x token in admin \u2192 Payments." }; }
   const phone = normPhoneNg(to);
-  if (!phone) return { ok: false, error: "invalid_phone" };
+  if (!phone) return { ok: false, error: "invalid_phone", message: "Cannot send the SMS: '" + String(to || "").trim() + "' is not a valid Nigerian phone number (use e.g. 08031234567)." };
   const fd = new FormData();
   fd.append("token", token);
   fd.append("sender", String(s.sms_sender || "").trim() || "Sornix");
@@ -62,10 +93,10 @@ async function sendSms(db, env, to, message, tag) {
   fd.append("routing", "3");    // basic route, DND numbers via corporate
   let r = null;
   try { r = await fetch("https://app.smartsmssolutions.com/io/api/client/v1/sms/", { method: "POST", body: fd }).then(x => x.json()); }
-  catch (e) { await audit(db, "sms", "error", (tag || "") + " " + phone + " network"); return { ok: false, error: "sms_gateway_error" }; }
+  catch (e) { await audit(db, "sms", "error", (tag || "") + " " + phone + " network"); return { ok: false, error: "sms_gateway_error", message: "Could not reach the SMS provider (app.smartsmssolutions.com). Check the internet connection and try again." }; }
   const okc = !!r && (r.code === 1000 || r.code === "1000");
   await audit(db, "sms", okc ? "sent" : "failed", (tag || "") + " " + phone + " units=" + (r && r.units_used != null ? r.units_used : "?") + (okc ? "" : " code=" + (r && r.code) + " " + String((r && r.comment) || "").slice(0, 80)));
-  return okc ? { ok: true, units: r.units_used } : { ok: false, error: "sms_gateway_error" };
+  return okc ? { ok: true, units: r.units_used } : { ok: false, error: "sms_gateway_error", message: "The SMS provider rejected the message" + (r && r.code != null ? " (code " + r.code + ")" : " (no response code)") + (r && r.comment ? ": " + String(r.comment).slice(0, 120) : ".") };
 }
 
 async function smsFee(db) { const s = await getSettings(db); const n = Number(s.sms_fee); return Number.isFinite(n) && n > 0 ? n : SMS_FEE_DEF; }
@@ -220,7 +251,7 @@ async function actCheckUsername(db, u) {
 
 async function actOrderStatus(db, id) {
   const o = await one(db, "SELECT status FROM orders WHERE order_id=?1", String(id || "").toUpperCase());
-  if (!o) return err("not_found");
+  if (!o) return err("not_found", "No order exists with ID '" + String(id || "").toUpperCase() + "'. Check the order ID from your purchase - it looks like SX-1A2B3C4D.");
   return json({ ok: true, status: o.status });
 }
 
@@ -231,7 +262,7 @@ async function actVoucherStatus(db, code) {
   const c = String(code || "").trim().toUpperCase();
   if (!/^[A-Z0-9-]{4,20}$/.test(c)) return err("invalid_code");
   const v = await one(db, "SELECT * FROM vouchers WHERE code=?1", c);
-  if (!v) return err("not_found");
+  if (!v) return err("not_found", "No voucher with PIN '" + c + "' exists. Check the characters on your slip and try again.");
   const plan = await one(db, "SELECT name,validity,rate_limit,price FROM plans WHERE plan_id=?1", v.plan_id);
   const sessions = await q(db, "SELECT mac,first_seen,last_seen FROM voucher_sessions WHERE code=?1 ORDER BY first_seen", c);
   const events = await q(db, "SELECT at,event FROM voucher_events WHERE code=?1 ORDER BY id", c);
@@ -255,18 +286,18 @@ async function actAdminVoucherHistory(db, b, who) {
 
 async function actCreateOrder(db, b) {
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
-  if (!plan) return err("invalid_plan");
+  if (!plan) return err("invalid_plan", "The plan '" + String(b.plan_id || "(none selected)") + "' is not available - it was removed or deactivated. Refresh the page and pick a current plan.");
   const phone = String(b.phone || "").trim();
-  if (phone && !/^\+?[0-9]{7,15}$/.test(phone)) return err("invalid_phone");
+  if (phone && !/^\+?[0-9]{7,15}$/.test(phone)) return err("invalid_phone", "The phone number '" + phone + "' is not valid. Use digits only (for example 08031234567), or leave it blank.");
 
   let idType, identifier;
   if (b.account_user !== undefined || b.account_pass !== undefined) {
     const u = String(b.account_user || "").trim(), p = String(b.account_pass || "");
     if (!USER_RE.test(u)) return err("invalid_username");
-    if (p.length < 4 || p.length > 32) return err("invalid_password");
+    if (p.length < 4 || p.length > 32) return err("invalid_password", "Your password must be 4-32 characters - the one entered has " + p.length + ".");
     const taken = await one(db, "SELECT 1 x FROM accounts WHERE username=?1", u);
     const taken2 = await one(db, "SELECT 1 x FROM orders WHERE identifier=?1 AND id_type!='mac' AND status IN ('approved','activated')", u);
-    if (taken || taken2) return err("username_taken");
+    if (taken || taken2) return err("username_taken", "The username '" + u + "' is already taken. Pick another one.");
     await run(db, "INSERT INTO accounts(username,pass_enc,created_at) VALUES(?1,?2,?3)", u, await encPass(this.env, p), nowIso());
     idType = "account"; identifier = u;
   } else {
@@ -277,13 +308,13 @@ async function actCreateOrder(db, b) {
       const acc = await one(db, "SELECT 1 x FROM accounts WHERE username=?1", raw);
       if (acc) { idType = "account"; identifier = raw; }   // renewal of an existing account
       else { idType = "device"; identifier = raw; }
-    } else return err("invalid_identifier");
+    } else return err("invalid_identifier", "'" + raw + "' is not a MAC address or an existing username. Use Auto MAC, or type your username.");
   }
 
   const id = orderId();
   const smsNotify = !!b.sms_notify;
   const smsPhone = smsNotify ? normPhoneNg(phone) : null;
-  if (smsNotify && !smsPhone) return err("invalid_phone");
+  if (smsNotify && !smsPhone) return err("invalid_phone", "SMS bank details need a valid Nigerian phone number (for example 08031234567). The number entered was '" + phone + "'.");
   const fee = smsNotify ? await smsFee(db) : 0;
   await run(db, "INSERT INTO orders(order_id,plan_id,id_type,identifier,phone,status,created_at,updated_at,sms_notify,sms_phone) VALUES(?1,?2,?3,?4,?5,'requested',?6,?7,?8,?9)",
     id, plan.plan_id, idType, identifier, phone, nowIso(), nowIso(), smsNotify ? 1 : 0, smsPhone || "");
@@ -294,37 +325,37 @@ async function actCreateOrder(db, b) {
 
 async function actVerifyPayment(db, env, b) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
-  if (!o) return err("not_found");
+  if (!o) return err("not_found", "No order exists with ID '" + String(b.order_id || "").toUpperCase() + "' - there is nothing to verify.");
   if (o.status !== "requested") return json({ ok: true, already: true, status: o.status });
   const gwName = String(b.gateway || "");
   const gw = await one(db, "SELECT * FROM gateways WHERE gateway=?1", gwName);
-  if (!gw || !gw.enabled || !gw.secret_key) return err("gateway_disabled");
+  if (!gw || !gw.enabled || !gw.secret_key) return err("gateway_disabled", !gw ? "Unknown payment gateway '" + gwName + "' - supported: paystack, flutterwave." : "The " + gwName + " gateway is " + (!gw.enabled ? "not enabled" : "missing its secret key") + " (fix in admin \u2192 Payments). Use bank transfer for now.");
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1", o.plan_id);
   const minAmount = (plan ? plan.price : 0) + (o.sms_notify ? await smsFee(db) : 0);
   const ref = String(b.reference || "");
-  if (!ref) return err("payment_not_verified");
+  if (!ref) return err("payment_not_verified", "No payment reference was sent. Complete the payment first, then verify it.");
   const dup = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", ref);
-  if (dup) return err("reference_already_used");
+  if (dup) return err("reference_already_used", "Payment reference '" + ref + "' was already used for another order. Pay again to get a fresh reference.");
   let paidMajor = 0;
 
   if (gwName === "paystack") {
-    let r; try { r = await fetch("https://api.paystack.co/transaction/verify/" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified"); }
-    if (!r || r.status !== true || !r.data) return err("payment_not_verified");
-    if (r.data.status !== "success") return err("payment_not_verified");
-    if (r.data.reference !== ref) return err("payment_not_verified");
-    if ((r.data.amount || 0) < minAmount * 100) return err("amount_too_low");
-    if (r.data.metadata && r.data.metadata.order_id && r.data.metadata.order_id !== o.order_id) return err("reference_already_used");
+    let r; try { r = await fetch("https://api.paystack.co/transaction/verify/" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified", "Could not reach Paystack to verify the payment. Check your internet connection and try again in a minute."); }
+    if (!r || r.status !== true || !r.data) return err("payment_not_verified", "Paystack could not verify reference '" + ref + "'" + (r && r.message ? ": " + String(r.message).slice(0, 120) : " (no valid response). Check the Paystack secret key in admin \u2192 Payments."));
+    if (r.data.status !== "success") return err("payment_not_verified", "Paystack says this payment is not successful yet (status: " + r.data.status + "). If you just paid, wait a minute and try again.");
+    if (r.data.reference !== ref) return err("payment_not_verified", "Paystack returned a different reference (" + r.data.reference + ") than the one submitted - verification failed.");
+    if ((r.data.amount || 0) < minAmount * 100) return err("amount_too_low", "Paystack shows \u20A6" + ((r.data.amount || 0) / 100) + " paid, but this order needs \u20A6" + minAmount + (o.sms_notify ? " (plan price + \u20A610 SMS fee)" : "") + ".");
+    if (r.data.metadata && r.data.metadata.order_id && r.data.metadata.order_id !== o.order_id) return err("reference_already_used", "This Paystack payment belongs to order " + r.data.metadata.order_id + ", not to " + o.order_id + ".");
     paidMajor = (r.data.amount || 0) / 100;
   } else if (gwName === "flutterwave") {
-    let r; try { r = await fetch("https://api.flutterwave.com/v3/transactions?tx_ref=" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified"); }
+    let r; try { r = await fetch("https://api.flutterwave.com/v3/transactions?tx_ref=" + encodeURIComponent(ref), { headers: { Authorization: "Bearer " + gw.secret_key } }).then(x => x.json()); } catch { return err("payment_not_verified", "Could not reach Flutterwave to verify the payment. Check your internet connection and try again in a minute."); }
     const tx = r && Array.isArray(r.data) && r.data[0];
-    if (!tx || tx.status !== "successful") return err("payment_not_verified");
-    if (tx.tx_ref !== ref) return err("payment_not_verified");
-    if ((tx.amount || 0) < minAmount) return err("amount_too_low");
+    if (!tx || tx.status !== "successful") return err("payment_not_verified", tx ? "Flutterwave says this payment is not successful (status: " + tx.status + "). If you just paid, wait a minute and try again." : "Flutterwave has no transaction with reference '" + ref + "'. Make sure the payment completed.");
+    if (tx.tx_ref !== ref) return err("payment_not_verified", "Flutterwave returned a different reference (" + tx.tx_ref + ") than the one submitted - verification failed.");
+    if ((tx.amount || 0) < minAmount) return err("amount_too_low", "Flutterwave shows \u20A6" + (tx.amount || 0) + " paid, but this order needs \u20A6" + minAmount + (o.sms_notify ? " (plan price + \u20A610 SMS fee)" : "") + ".");
     paidMajor = Number(tx.amount || 0);
     const dup2 = await one(db, "SELECT 1 x FROM orders WHERE reference=?1", String(tx.id));
-    if (dup2) return err("reference_already_used");
-  } else return err("gateway_disabled");
+    if (dup2) return err("reference_already_used", "Flutterwave transaction " + tx.id + " was already used to pay for another order.");
+  } else return err("gateway_disabled", "Unknown payment gateway '" + gwName + "' - supported: paystack, flutterwave.");
 
   const res = await markApproved(db, env, o, gwName, ref, paidMajor, "autoApprove");
   if (!res.ok && !res.already) return err(res.reason || "payment_not_verified");
@@ -334,18 +365,18 @@ async function actVerifyPayment(db, env, b) {
 // ---------------------------------------------------------------- public SMS bank-details request
 async function actRequestAccountSms(db, env, b) {
   const phone = normPhoneNg(b.phone);
-  if (!phone) return err("invalid_phone");
+  if (!phone) return err("invalid_phone", "Enter a valid Nigerian phone number (for example 08031234567). You entered '" + String(b.phone || "").trim() + "'.");
   const key = "smsreq:" + phone;
   const row = await one(db, "SELECT * FROM otp WHERE email=?1", key);
-  if (row && row.sends >= 5 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts");
+  if (row && row.sends >= 5 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts", "You have requested the bank-details SMS 5 times in the last 15 minutes. Wait and try again - the bank details do not change.");
   const s = await getSettings(db);
   const bank = String(s.bank_details || "").trim().replace(/\s+/g, " ");
-  if (!bank) return err("bank_not_set");
+  if (!bank) return err("bank_not_set", "The operator has not published bank details yet, so there is nothing to send. Pay online or contact support.");
   const tpl = s.sms_bank_template || "{site} bank transfer details: {bank_details} Quote your order ID when paying. Support: {support}";
   const msg = tpl.replace(/\{bank_details\}/gi, bank).replace(/\{site\}/gi, s.site_name || "Sornix WiFi").replace(/\{support\}/gi, s.support_phone || s.site_name || "");
   const r = await sendSms(db, env, phone, msg, "bankreq");
   await run(db, "INSERT INTO otp(email,code_hash,expires_at,attempts,sends,sent_at) VALUES(?1,'',0,0,?2,?3) ON CONFLICT(email) DO UPDATE SET sends=sends+1,sent_at=?3", key, row ? row.sends + 1 : 1, nowMs());
-  if (!r.ok) return err(r.error);
+  if (!r.ok) return err(r.error, r.message);
   return json({ ok: true });
 }
 
@@ -356,7 +387,7 @@ async function actSendOtp(db, env, b) {
   const email = String(b.email || "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ ok: true }); // do not leak the admin list
   const row = await one(db, "SELECT * FROM otp WHERE email=?1", email);
-  if (row && row.sends >= 10 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts");
+  if (row && row.sends >= 10 && nowMs() - row.sent_at < 15 * 60e3) return err("too_many_attempts", "Too many sign-in codes requested for this email (limit 10 per 15 minutes). Wait and try again.");
   if (!adminEmails(env).includes(email)) return json({ ok: true });
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, "0");
   await run(db, "INSERT INTO otp(email,code_hash,expires_at,attempts,sends,sent_at) VALUES(?1,?2,?3,0,?4,?5) ON CONFLICT(email) DO UPDATE SET code_hash=?2,expires_at=?3,attempts=0,sends=sends+1,sent_at=?5",
@@ -383,10 +414,11 @@ async function actVerifyOtp(db, env, b) {
   const email = String(b.email || "").trim().toLowerCase();
   const code = String(b.otp || "").trim();
   const row = await one(db, "SELECT * FROM otp WHERE email=?1", email);
-  if (!row || row.expires_at < nowMs() || row.attempts >= 5) return err("unauthorized");
+  if (!row || row.expires_at < nowMs()) return err("unauthorized", "That code has expired or was never sent. Request a new one - codes last 5 minutes.");
+  if (row.attempts >= 5) return err("unauthorized", "Too many wrong attempts - this code is locked. Request a new one.");
   if (!safeEq(row.code_hash, await sha256(env.OTP_SALT + "|" + email + "|" + code))) {
     await run(db, "UPDATE otp SET attempts=attempts+1 WHERE email=?1", email);
-    return err("unauthorized");
+    return err("unauthorized", "Wrong code - " + Math.max(0, 4 - row.attempts) + " attempt(s) left before this code locks. Use the most recent code sent to you.");
   }
   await run(db, "DELETE FROM otp WHERE email=?1", email);
   const tok = randHex(32);
@@ -440,7 +472,7 @@ async function actAdminGetAll(db, env) {
 // live hotspot sessions + force logout (queued for the next router sync tick)
 async function actAdminLogout(db, env, b, who) {
   const user = String(b.user || "").trim();
-  if (!user || user.length > 64) return err("invalid_identifier");
+  if (!user || user.length > 64) return err("invalid_identifier", "Enter the exact hotspot username to log out (1-64 characters).");
   const cmd = '/ip hotspot active remove [find where user="' + esc(user) + '"]';
   const row = await one(db, "SELECT value FROM router_state WHERE key='pending_cmds'");
   let pc = []; try { pc = JSON.parse(row ? row.value : "[]"); } catch { pc = []; }
@@ -456,12 +488,12 @@ async function actAdminLogout(db, env, b, who) {
 async function actAdminSmsBalance(db, env, b, who) {
   const s = await getSettings(db);
   const token = String(s.sms_token || "").trim();
-  if (!token) return err("sms_not_configured");
+  if (!token) return err("sms_not_configured", "No SmartSMS token saved yet - add it in admin \u2192 Payments, then check the balance again.");
   let bal = null;
   try { bal = await fetch("https://app.smartsmssolutions.com/io/api/client/v1/balance/?token=" + encodeURIComponent(token)).then(x => x.json()); }
-  catch (e) { return err("sms_gateway_error"); }
+  catch (e) { return err("sms_gateway_error", "Could not reach the SmartSMS balance API. Check the internet connection and try again."); }
   const n = Number(bal);
-  if (!Number.isFinite(n)) return err("sms_gateway_error");
+  if (!Number.isFinite(n)) return err("sms_gateway_error", "SmartSMS returned an unexpected balance response: '" + String(bal).slice(0, 80) + "'. Check that the saved token is an API-x token.");
   await run(db, "INSERT INTO router_state(key,value) VALUES('sms_balance',?1) ON CONFLICT(key) DO UPDATE SET value=?1", JSON.stringify({ units: n, at: nowIso() }));
   await audit(db, who, "smsBalance", String(n));
   return json({ ok: true, units: n, at: nowIso() });
@@ -479,7 +511,7 @@ async function actAdminWifiSet(db, env, b, who) {
     parts.push("ssid=" + ssid);
   }
   if (psk) {
-    if (psk.length < 8 || psk.length > 63) return err("invalid_psk");
+    if (psk.length < 8 || psk.length > 63) return err("invalid_psk", "WiFi password must be 8-63 characters (WPA2 requirement) - the one entered has " + psk.length + ".");
     const keyCmd = ' mode=dynamic-keys authentication-types=wpa2-psk wpa2-pre-shared-key="' + esc(psk) + '"';
     cmds.push('/interface wireless security-profiles set [find where default=yes]' + keyCmd);
     cmds.push('/interface wireless security-profiles set [find where name=[/interface wireless get [find where mode="ap-bridge" and disabled=no] security-profile]]' + keyCmd);
@@ -504,15 +536,15 @@ async function actAdminTestSms(db, env, b, who) {  const phone = String(b.phone 
   const s = await getSettings(db);
   const r = await sendSms(db, env, phone, (s.site_name || "Sornix WiFi") + ": test SMS - your SMS token works.", "test");
   await audit(db, who, "testSms", phone + " -> " + (r.ok ? "ok" : r.error));
-  return r.ok ? json({ ok: true }) : err(r.error);
+  return r.ok ? json({ ok: true }) : err(r.error, r.message);
 }
 
 async function actUpdateOrder(db, env, b, who) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
-  if (!o) return err("not_found");
+  if (!o) return err("not_found", "No order with ID '" + String(b.order_id || "").toUpperCase() + "'.");
   const s = String(b.status || "");
-  if (!["approved", "rejected"].includes(s)) return err("bad_status");
-  if (o.status !== "requested") return err("bad_status");
+  if (!["approved", "rejected"].includes(s)) return err("bad_status", "New status must be 'approved' or 'rejected' - got '" + s + "'.");
+  if (o.status !== "requested") return err("bad_status", "Order " + o.order_id + " is already '" + o.status + "'. Only orders waiting for payment confirmation ('requested') can be approved or rejected.");
   await run(db, "UPDATE orders SET status=?1,paid_at=COALESCE(paid_at,?2),updated_at=?2,paid_via=COALESCE(paid_via,'bank') WHERE order_id=?3", s, nowIso(), o.order_id);
   await audit(db, who, "updateOrder", o.order_id + " -> " + s);
   notify(env, (s === "approved" ? "\u2705 Approved " : "\u274C Rejected ") + o.order_id + " (" + o.identifier + ") by " + who);
@@ -529,8 +561,8 @@ async function actBulkOrders(db, env, who) {
 
 async function actRevoke(db, env, b, who) {
   const o = await one(db, "SELECT * FROM orders WHERE order_id=?1", String(b.order_id || "").toUpperCase());
-  if (!o) return err("not_found");
-  if (!["approved", "activated"].includes(o.status)) return err("bad_status");
+  if (!o) return err("not_found", "No order with ID '" + String(b.order_id || "").toUpperCase() + "'.");
+  if (!["approved", "activated"].includes(o.status)) return err("bad_status", "Order " + o.order_id + " is '" + o.status + "'. Only approved or activated orders can be revoked.");
   await run(db, "UPDATE orders SET status='revoking',updated_at=?1 WHERE order_id=?2", nowIso(), o.order_id);
   await audit(db, who, "revoke", o.order_id + " " + o.identifier);
   notify(env, "\u26D4 Revoke started " + o.order_id + " (" + o.identifier + ") by " + who);
@@ -539,8 +571,10 @@ async function actRevoke(db, env, b, who) {
 
 async function actMakeVouchers(db, env, b, who) {
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
-  if (!plan) return err("invalid_plan");
-  const count = Math.min(200, Math.max(1, Number(b.count) || 0));
+  if (!plan) return err("invalid_plan", "Pick an active plan first - '" + String(b.plan_id || "(none selected)") + "' is unknown or inactive.");
+  const n0 = Number(b.count);
+  if (!Number.isFinite(n0) || n0 < 1 || n0 > 200 || n0 !== Math.floor(n0)) return err("invalid_count", "Enter how many vouchers to create: a whole number from 1 to 200 (you entered '" + String(b.count) + "').");
+  const count = n0;
   const batch = "B" + nowIso().slice(0, 10).replace(/-/g, "") + "-" + randHex(2).toUpperCase();
   const codes = [];
   for (let i = 0; i < count; i++) {
@@ -557,9 +591,9 @@ async function actMakeVouchers(db, env, b, who) {
 }
 
 async function actUpdateVoucher(db, b, who) {
-  if (String(b.op) !== "delete") return err("bad_op");
+  if (String(b.op) !== "delete") return err("bad_op", "Unsupported voucher operation '" + String(b.op) + "' - only 'delete' is available.");
   const v = await one(db, "SELECT * FROM vouchers WHERE code=?1", String(b.code || "").toUpperCase());
-  if (!v) return err("not_found");
+  if (!v) return err("not_found", "No voucher with PIN '" + String(b.code || "").toUpperCase() + "'.");
   await run(db, "UPDATE vouchers SET status='deleted' WHERE code=?1", v.code);
   await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'deleted',?3)", v.code, nowIso(), who);
   await audit(db, who, "deleteVoucher", v.code);
@@ -569,12 +603,12 @@ async function actUpdateVoucher(db, b, who) {
 async function actUpdatePlan(db, b, who) {
   const p = b.plan || {}, op = String(b.op);
   if (op === "delete") { await run(db, "DELETE FROM plans WHERE plan_id=?1", String(p.plan_id || "")); await audit(db, who, "deletePlan", p.plan_id); return json({ ok: true }); }
-  if (op !== "save") return err("bad_op");
+  if (op !== "save") return err("bad_op", "Unsupported plan operation '" + op + "' - use 'save' or 'delete'.");
   const id = String(p.plan_id || "").trim();
-  if (!/^[A-Za-z0-9_]{1,24}$/.test(id)) return err("invalid_plan");
-  if (!String(p.name || "").trim()) return err("invalid_plan");
-  if (!VALIDITY_RE.test(String(p.validity || ""))) return err("invalid_plan");
-  if (!RATE_RE.test(String(p.rate_limit || ""))) return err("invalid_plan");
+  if (!/^[A-Za-z0-9_]{1,24}$/.test(id)) return err("invalid_plan", "Plan ID must be 1-24 characters: letters, numbers or underscore (you entered '" + id + "').");
+  if (!String(p.name || "").trim()) return err("invalid_plan", "Plan name cannot be empty.");
+  if (!VALIDITY_RE.test(String(p.validity || ""))) return err("invalid_plan", "Validity must be a number + unit s/m/h/d/w, for example 12h, 1d, 7d, 30d (you entered '" + String(p.validity || "") + "').");
+  if (!RATE_RE.test(String(p.rate_limit || ""))) return err("invalid_plan", "Speed limit must look like 2M/5M (upload/download, units k, M or G) - you entered '" + String(p.rate_limit || "") + "'.");
   await run(db, "INSERT INTO plans(plan_id,name,price,validity,rate_limit,shared_users,is_featured_on_login,active) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(plan_id) DO UPDATE SET name=?2,price=?3,validity=?4,rate_limit=?5,shared_users=?6,is_featured_on_login=?7,active=?8",
     id, String(p.name).trim(), Math.max(0, Math.round(Number(p.price) || 0)), String(p.validity), String(p.rate_limit), Math.max(1, Math.min(10, Number(p.shared_users) || 1)), p.is_featured_on_login ? 1 : 0, p.active ? 1 : 0);
   await audit(db, who, "savePlan", id);
@@ -606,8 +640,8 @@ async function actSaveSettings(db, b, who) {
 async function actBanners(db, b, who) {
   const x = b.banner || {}, op = String(b.op);
   if (op === "delete") { await run(db, "DELETE FROM banners WHERE id=?1", String(x.id || "")); await audit(db, who, "deleteBanner", x.id); return json({ ok: true }); }
-  if (op !== "save") return err("bad_op");
-  if (!/^https:\/\/./.test(String(x.image_url || ""))) return err("invalid_banner");
+  if (op !== "save") return err("bad_op", "Unsupported banner operation '" + op + "' - use 'save' or 'delete'.");
+  if (!/^https:\/\/./.test(String(x.image_url || ""))) return err("invalid_banner", "Banner image URL must be a full https:// web address (you entered '" + String(x.image_url || "").slice(0, 60) + "').");
   const id = String(x.id || "") || randHex(4);
   await run(db, "INSERT INTO banners(id,image_url,link_url,sort) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET image_url=?2,link_url=?3,sort=?4",
     id, String(x.image_url), String(x.link_url || ""), Number(x.sort) || 0);
@@ -617,7 +651,7 @@ async function actBanners(db, b, who) {
 
 async function actWhitelist(db, b, who) {
   const mac = normMac(b.mac);
-  if (!mac) return err("invalid_identifier");
+  if (!mac) return err("invalid_identifier", "'" + String(b.mac || "") + "' is not a MAC address. Use the form AA:BB:CC:DD:EE:FF.");
   if (String(b.op) === "remove") { await run(db, "DELETE FROM whitelist WHERE mac=?1", mac); await audit(db, who, "whitelistRemove", mac); return json({ ok: true }); }
   await run(db, "INSERT INTO whitelist(mac,note,created_at) VALUES(?1,?2,?3) ON CONFLICT(mac) DO UPDATE SET note=?2", mac, String(b.note || ""), nowIso());
   await audit(db, who, "whitelistAdd", mac);
@@ -683,7 +717,7 @@ function parseReport(text) {
 async function routerSync(db, env, req) {
   const url = new URL(req.url);
   const tok = url.searchParams.get("token") || req.headers.get("X-Router-Token") || "";
-  if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+  if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad or missing router token - the token in this URL must match the ROUTER_TOKEN secret on the Worker\n", { status: 403, headers: { "Content-Type": "text/plain" } });
   const rep = parseReport(await req.text());
   const t = nowIso();
   await run(db, "INSERT INTO router_state(key,value) VALUES('last_seen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", String(nowMs()));
@@ -896,14 +930,14 @@ export default {
       if (path === "/router/commands") {
         // download channel: returns the RSC computed for the last received report
         const tok = url.searchParams.get("token") || "";
-        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad or missing router token - the token in this URL must match the ROUTER_TOKEN secret on the Worker\n", { status: 403, headers: { "Content-Type": "text/plain" } });
         const row = await one(env.DB, "SELECT value FROM router_state WHERE key='pending_rsc'");
         return new Response(row ? row.value : "# no commands yet\n", { headers: { "Content-Type": "text/plain", "Cache-Control": "no-store", ...CORS } });
       }
       if (path === "/router/bootstrap") {
         // one-time installer: token-gated RSC that pulls pages + sync script from this Worker
         const tok = url.searchParams.get("token") || "";
-        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("# bad or missing router token - the token in this URL must match the ROUTER_TOKEN secret on the Worker\n", { status: 403, headers: { "Content-Type": "text/plain" } });
         const api = env.PUBLIC_ORIGIN || "https://isp.sornix.com.ng";
         const host = new URL(api).host;
         const rsc = [
@@ -959,7 +993,7 @@ export default {
       if (isApi) {
         await seed(env.DB);
         if (req.method === "POST") {
-          let b = {}; try { b = JSON.parse(await req.text() || "{}"); } catch { return err("bad_json"); }
+          let b = {}; try { b = JSON.parse(await req.text() || "{}"); } catch (e) { return err("bad_json", "The request body was not valid JSON: " + String(e && e.message || e).slice(0, 120)); }
           const action = String(b.action || "");
           // public
           if (action === "createOrder") return await actCreateOrder.call({ env }, env.DB, b);
@@ -970,7 +1004,7 @@ export default {
           // admin
           if (/^admin|^update|^bulk|^revoke|^make|^save/.test(action)) {
             const who = await authAdmin(env.DB, env, b.token);
-            if (!who) return err("unauthorized", 200);
+            if (!who) return err("unauthorized", "Your admin session is missing or expired. Sign in again with your email and code.");
             switch (action) {
               case "adminGetAll": return await actAdminGetAll(env.DB, env);
               case "adminDiag": return await actDiag(env.DB, env);
@@ -991,26 +1025,26 @@ export default {
               case "updateWhitelist": return await actWhitelist(env.DB, b, who);
               case "importData": return await actImport(env.DB, b, who);
             }
-            return err("unknown_action");
+            return err("unknown_action", "Unknown admin action '" + action + "'. Hard-refresh the admin page (Ctrl+Shift+R) - it may be an old cached version.");
           }
-          return err("unknown_action");
+          return err("unknown_action", "Unknown API action '" + action + "'.");
         }
         // GET
         const action = url.searchParams.get("action");
         if (!action && path === "/") return new Response(null, { status: 302, headers: { Location: "/admin.html", ...CORS } });
-        if (!action) return err("unknown_action");
+        if (!action) return err("unknown_action", "No action was requested. Use /api?action=getSettings, getPlans, getOrderStatus, getVoucherStatus or checkUsername.");
         if (action === "getSettings") return await actGetSettings(env.DB);
         if (action === "getPlans") return await actGetPlans(env.DB);
         if (action === "checkUsername") return await actCheckUsername(env.DB, url.searchParams.get("u"));
         if (action === "getOrderStatus") return await actOrderStatus(env.DB, url.searchParams.get("order_id"));
         if (action === "getVoucherStatus") return await actVoucherStatus(env.DB, url.searchParams.get("code"));
-        return err("unknown_action");
+        return err("unknown_action", "Unknown API action '" + action + "'. Available: getSettings, getPlans, checkUsername, getOrderStatus, getVoucherStatus.");
       }
       // static assets (admin.html, verify.html)
       return await env.ASSETS.fetch(req);
     } catch (e) {
       console.error("worker error", e && e.stack || e);
-      return err("internal_error", 500);
+      return err("internal_error", "Server error while handling this request: " + String(e && e.message || e).slice(0, 200) + " (action: " + String((req.method === "POST" ? "(see logs)" : url.searchParams.get("action")) || "-") + ")", 500);
     }
   }
 };
