@@ -533,6 +533,22 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      if (path === "/router/files/" || path.startsWith("/router/files/")) {
+        // token-gated file delivery THROUGH the worker (immune to edge asset propagation lag)
+        const tok = url.searchParams.get("token") || "";
+        if (!env.ROUTER_TOKEN || !safeEq(tok, env.ROUTER_TOKEN)) return new Response("bad token\n", { status: 403, headers: { "Content-Type": "text/plain" } });
+        const name = decodeURIComponent(path.split("/").slice(3).join("/") || url.searchParams.get("name") || "");
+        const map = {
+          "login.html": "/hotspot/login.html", "alogin.html": "/hotspot/alogin.html", "error.html": "/hotspot/error.html",
+          "logout.html": "/hotspot/logout.html", "redirect.html": "/hotspot/redirect.html", "status.html": "/hotspot/status.html",
+          "sx.css": "/hotspot/sx.css", "sx-sync.rsc": "/mikrotik/sx-sync.rsc"
+        };
+        const ap = map[name];
+        if (!ap) return new Response("unknown file\n", { status: 404, headers: { "Content-Type": "text/plain" } });
+        const r = await env.ASSETS.fetch(new Request("https://assets.internal" + ap));
+        if (!r.ok) return new Response("asset missing\n", { status: 404, headers: { "Content-Type": "text/plain" } });
+        return new Response(r.body, { headers: { "Content-Type": r.headers.get("Content-Type") || "text/plain", "Cache-Control": "no-store", ...CORS } });
+      }
       if (path === "/router/bootstrap") {
         // one-time installer: token-gated RSC that pulls pages + sync script from this Worker
         const tok = url.searchParams.get("token") || "";
@@ -545,11 +561,19 @@ export default {
           ':global sxTok "' + env.ROUTER_TOKEN + '"',
           '/system script remove [find where name="sx-config"]',
           '/system script add name="sx-config" source=":global sxApi \\"' + api + '\\"\\n:global sxTok \\"' + env.ROUTER_TOKEN + '\\""',
-          '# pull the sync script and the captive-portal pages from the Worker',
-          '/tool fetch url=("$sxApi/mikrotik/sx-sync.rsc") dst-path="sx-sync.rsc" as-value',
+          '# pull the sync script and the captive-portal pages from the Worker (3 attempts each)',
+          ':foreach f in={sx-sync.rsc;login.html;alogin.html;error.html;logout.html;redirect.html;status.html;sx.css} do={',
+          '  :local dst ("hotspot/" . $f); :if ($f = "sx-sync.rsc") do={ :set dst "sx-sync.rsc" }',
+          '  :local ok false',
+          '  :for try from=1 to=3 do={',
+          '    :if ($ok = false) do={',
+          '      :do { /tool fetch url=("$sxApi/router/files/" . $f . "?token=" . $sxTok) dst-path=$dst as-value; :set ok true } on-error={ :log warning ("sx-bootstrap: retry " . $f); :delay 2s }',
+          '    }',
+          '  }',
+          '  :if ($ok = false) do={ :log error ("sx-bootstrap: FAILED to download " . $f) }',
+          '}',
           '/system script remove [find where name="sx-sync"]',
           '/system script add name="sx-sync" source=[/file get [find where name="sx-sync.rsc"] contents]',
-          ':foreach f in={login.html;alogin.html;error.html;logout.html;redirect.html;status.html;sx.css} do={ /tool fetch url=("$sxApi/hotspot/" . $f) dst-path=("hotspot/" . $f) as-value }',
           '/system scheduler remove [find where name="sx-sync"]',
           '/system scheduler add name="sx-sync" interval=25s start-time=startup on-event="/system script run sx-config\\n/system script run sx-sync"',
           '/ip hotspot walled-garden remove [find where comment="sx"]',
