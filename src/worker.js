@@ -17,7 +17,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 const SX_VERSION = "12";
 // Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
 // re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
-const PORTAL_GEN = "2";
+const PORTAL_GEN = "3";
 const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
@@ -822,11 +822,13 @@ async function routerSync(db, env, req) {
   // portal page refresh: worker-gated by PORTAL_GEN (router globals are unreliable on this build)
   const pgRow = await one(db, "SELECT value FROM router_state WHERE key='portal_gen'");
   if ((pgRow ? pgRow.value : "") !== PORTAL_GEN) {
+    // NOTE: on this router /file entries carry the "flash/" prefix; a bare dst-path creates a
+    // phantom entry that the hotspot web server never serves. Always target flash/hotspot/<file>.
     for (const f of PORTAL_FILES) {
-      out.push(':do { /file remove [find where name="hotspot/' + f + '"] } on-error={ }');
-      out.push(':do { /tool fetch url="' + apiBase + '/router/files/' + f + '?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/' + f + '" as-value } on-error={ ' + beaconRaw("ERR-page-" + encodeURIComponent(f)) + ' }');
+      out.push(':do { /file remove [find where name="flash/hotspot/' + f + '"] } on-error={ }');
+      out.push(':do { /tool fetch url="' + apiBase + '/router/files/' + f + '?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/' + f + '" as-value } on-error={ ' + beaconRaw("ERR-page-" + encodeURIComponent(f)) + ' }');
     }
-    out.push(dynEarly('"PORTALSZ-login-" . [/file get [find where name="hotspot/login.html"] size] . "-alogin-" . [/file get [find where name="hotspot/alogin.html"] size] . "-error-" . [/file get [find where name="hotspot/error.html"] size] . "-logout-" . [/file get [find where name="hotspot/logout.html"] size] . "-redirect-" . [/file get [find where name="hotspot/redirect.html"] size] . "-status-" . [/file get [find where name="hotspot/status.html"] size] . "-css-" . [/file get [find where name="hotspot/sx.css"] size]'));
+    out.push(dynEarly('"PORTALSZ-login-" . [/file get [find where name="flash/hotspot/login.html"] size] . "-alogin-" . [/file get [find where name="flash/hotspot/alogin.html"] size] . "-error-" . [/file get [find where name="flash/hotspot/error.html"] size] . "-logout-" . [/file get [find where name="flash/hotspot/logout.html"] size] . "-redirect-" . [/file get [find where name="flash/hotspot/redirect.html"] size] . "-status-" . [/file get [find where name="flash/hotspot/status.html"] size] . "-css-" . [/file get [find where name="flash/hotspot/sx.css"] size]'));
     await run(db, "INSERT INTO router_state(key,value) VALUES('portal_gen',?1) ON CONFLICT(key) DO UPDATE SET value=?1", PORTAL_GEN);
   }
   if (missingEarly.length) {
@@ -973,7 +975,7 @@ export default {
           '/system script remove [find where name="sx-config"]',
           '/system script remove [find where name="sx-sync"]',
           '/ip hotspot walled-garden remove [find where comment="sx"]',
-          ':foreach f in={sxboot.rsc;sxcmd.rsc;sxrep.txt;sx-sync.rsc;sx-sync-new.rsc;t1.txt;t2.txt;t3.txt;t4.txt;t5.txt;t6.txt;hotspot/t6.html;hotspot/login.html;hotspot/alogin.html;hotspot/error.html;hotspot/logout.html;hotspot/redirect.html;hotspot/status.html;hotspot/sx.css} do={ /file remove [find where name=$f] }',
+          ':foreach f in={sxboot.rsc;sxcmd.rsc;sxrep.txt;sx-sync.rsc;sx-sync-new.rsc;t1.txt;t2.txt;t3.txt;t4.txt;t5.txt;t6.txt;hotspot/t6.html;flash/hotspot/login.html;flash/hotspot/alogin.html;flash/hotspot/error.html;flash/hotspot/logout.html;flash/hotspot/redirect.html;flash/hotspot/status.html;flash/hotspot/sx.css} do={ /file remove [find where name=$f] }',
           "# 2) globals",
           ':global sxApi "' + api + '"',
           ':global sxTok "' + env.ROUTER_TOKEN + '"',
@@ -995,13 +997,13 @@ export default {
           '/ip hotspot walled-garden add dst-host="api.flutterwave.com" comment="sx"',
           '/ip hotspot walled-garden add dst-host="wa.me" comment="sx"',
           "# 7) captive-portal pages (literal lines, no loops)",
-          ':do { /tool fetch url="' + api + '/router/files/login.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/login.html" as-value; :log info "sx-bootstrap: got login.html" } on-error={ :log error "sx-bootstrap: FAILED login.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/alogin.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/alogin.html" as-value; :log info "sx-bootstrap: got alogin.html" } on-error={ :log error "sx-bootstrap: FAILED alogin.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/error.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/error.html" as-value; :log info "sx-bootstrap: got error.html" } on-error={ :log error "sx-bootstrap: FAILED error.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/logout.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/logout.html" as-value; :log info "sx-bootstrap: got logout.html" } on-error={ :log error "sx-bootstrap: FAILED logout.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/redirect.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/redirect.html" as-value; :log info "sx-bootstrap: got redirect.html" } on-error={ :log error "sx-bootstrap: FAILED redirect.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/status.html?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/status.html" as-value; :log info "sx-bootstrap: got status.html" } on-error={ :log error "sx-bootstrap: FAILED status.html" }',
-          ':do { /tool fetch url="' + api + '/router/files/sx.css?token=' + env.ROUTER_TOKEN + '" dst-path="hotspot/sx.css" as-value; :log info "sx-bootstrap: got sx.css" } on-error={ :log error "sx-bootstrap: FAILED sx.css" }',
+          ':do { /tool fetch url="' + api + '/router/files/login.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/login.html" as-value; :log info "sx-bootstrap: got login.html" } on-error={ :log error "sx-bootstrap: FAILED login.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/alogin.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/alogin.html" as-value; :log info "sx-bootstrap: got alogin.html" } on-error={ :log error "sx-bootstrap: FAILED alogin.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/error.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/error.html" as-value; :log info "sx-bootstrap: got error.html" } on-error={ :log error "sx-bootstrap: FAILED error.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/logout.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/logout.html" as-value; :log info "sx-bootstrap: got logout.html" } on-error={ :log error "sx-bootstrap: FAILED logout.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/redirect.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/redirect.html" as-value; :log info "sx-bootstrap: got redirect.html" } on-error={ :log error "sx-bootstrap: FAILED redirect.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/status.html?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/status.html" as-value; :log info "sx-bootstrap: got status.html" } on-error={ :log error "sx-bootstrap: FAILED status.html" }',
+          ':do { /tool fetch url="' + api + '/router/files/sx.css?token=' + env.ROUTER_TOKEN + '" dst-path="flash/hotspot/sx.css" as-value; :log info "sx-bootstrap: got sx.css" } on-error={ :log error "sx-bootstrap: FAILED sx.css" }',
           "# 8) first run",
           "/system script run sx-config",
           "/system script run sx-sync",

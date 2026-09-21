@@ -254,3 +254,14 @@ or loses the captive-portal page mid-checkout.
   runs (`sxTick` stayed 1 forever), so the old "refresh every 720 ticks" never worked and, once the
   refresh could actually succeed, re-downloaded pages every tick. Never gate logic on script
   globals; all gating lives worker-side (SX_VERSION / PORTAL_GEN).
+
+### 13.1 The flash/ prefix quirk (why portal pages never updated before)
+
+On this Groove, `/file` entries carry the disk prefix in their name: the captive-portal pages live
+at `flash/hotspot/login.html` etc. A `/tool fetch dst-path="hotspot/login.html"` (bare path) creates
+a *phantom* entry named `hotspot/login.html` that `/file get [find where name=...]` can measure but
+the hotspot web server NEVER serves. All portal refreshes since the original install were writing
+to phantoms while customers kept getting the old `flash/hotspot/*` copies.
+Rule: every router file operation that must reach the web server uses `flash/hotspot/<file>`;
+`PORTAL_GEN` (worker.js, currently "3") triggers the delete+re-download; PORTALSZ beacons measure
+the flash/ paths so `wc -c public/hotspot/*` remains the verification method.
