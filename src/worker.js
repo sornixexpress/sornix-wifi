@@ -306,7 +306,7 @@ async function actRegisterDevicePhone(db, b) {
 async function actMacHistory(db, mac) {
   const m = normMac(mac);
   if (!m) return err("invalid_identifier", "A MAC address is required, for example AA:BB:CC:DD:EE:FF.");
-  const rows = await q(db, "SELECT order_id,plan_id,status,created_at,expires_at FROM orders WHERE id_type='mac' AND identifier=?1 ORDER BY created_at DESC LIMIT 5", m);
+  const rows = await q(db, "SELECT order_id,plan_id,status,created_at,expires_at FROM orders WHERE id_type='mac' AND identifier=?1 AND COALESCE(paid_via,'')!='trial' ORDER BY created_at DESC LIMIT 5", m);
   if (!rows.length) return json({ ok: true, found: false });
   const last = rows[0];
   const plan = await one(db, "SELECT name,price,validity FROM plans WHERE plan_id=?1", last.plan_id);
@@ -369,6 +369,7 @@ async function actCreateOrder(db, b, env) {
   if (b.trial) return await startTrial(env, db, b);
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
   if (!plan) return err("invalid_plan", "The plan '" + String(b.plan_id || "(none selected)") + "' is not available - it was removed or deactivated. Refresh the page and pick a current plan.");
+  if (Number(plan.price) === 0) return err("invalid_plan", "'" + plan.name + "' cannot be ordered directly - it is the free trial. Use the \u201CStart my free trial\u201D button instead (one trial per customer), or pick a paid plan below.");
   const phone = String(b.phone || "").trim();
   if (phone && !/^\+?[0-9]{7,15}$/.test(phone)) return err("invalid_phone", "The phone number '" + phone + "' is not valid. Use digits only (for example 08031234567), or leave it blank.");
 
