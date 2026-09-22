@@ -136,7 +136,7 @@ P.orders=function(){var setO=function(o,s){act("updateOrder",{order_id:o.order_i
   var rows=D.orders.filter(function(o){return !t||[o.order_id,o.identifier,o.phone,o.plan_id,o.status].join(" ").toLowerCase().indexOf(t)>=0});
   wrap.append(rows.length?table(["Date","Order","For","Type","Plan","Paid via","Phone","Status",""],rows.map(function(o){return h("tr",{},
    h("td",{},String(o.created_at).slice(0,16).replace("T"," ")),h("td",{},o.order_id),h("td",{},o.identifier),h("td",{},o.id_type),h("td",{},o.plan_id),
-   h("td",{},o.paid_via||"bank"),h("td",{},h("a",{href:"tel:"+o.phone,style:"color:#f5a524"},o.phone)),h("td",{className:"s-"+o.status},o.status),
+   h("td",{},o.paid_via||"bank"),h("td",{},h("a",{href:"tel:"+o.phone,style:"color:#f5a524"},o.phone)),h("td",{className:"s-"+o.status},o.status+(o.paid_via==="trial"?" \u{1F381}":"")),
    h("td",{},o.status==="requested"?[btn("Approve",function(){setO(o,"approved")},1),btn("Reject",function(){setO(o,"rejected")})]:
      (o.status==="approved"||o.status==="activated")?btn("Revoke",function(){if(confirm("Remove "+o.identifier+" from the router?"))act("revokeAccess",{order_id:o.order_id})}):null))})):h("p",{className:"muted"},"Nothing matches."))};
  f.oninput=draw;draw();
@@ -247,7 +247,7 @@ P.gateways=function(){var f={},sf={tk:h("input",{type:"password",autocomplete:"o
   btn("Send test SMS",async function(){var r=await api("adminTestSms",{phone:sf.tp.value.trim()});flash(r.ok?"Test SMS sent":(r.message||("Failed: "+(r.error||"unknown"))),!r.ok)})))};
 
 // ---------------- Branding ----------------
-P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp support number for the floating help button (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details (sent by SMS when customers request them)",1],["login_rules_text","Login-page HOW IT WORKS rules shown to customers (one rule per line)",1]],f={};
+P.settings=function(){var SF=[["site_name","Site name"],["site_description","Site description",1],["logo_url","Logo image URL"],["welcome_text","Welcome text"],["support_phone","Support phone"],["whatsapp_phone","WhatsApp support number for the floating help button (digits, with country code)"],["outlets","Sales outlet addresses (one per line)",1],["bank_details","Bank account details (sent by SMS when customers request them)",1],["login_rules_text","Login-page HOW IT WORKS rules shown to customers (one rule per line)",1],["auto_trial_enabled","Enable free trial on the login page (1 = on, 0 = off)"],["trial_plan_id","Free-trial plan ID (from the Plans tab)"],["trial_card_text","Free-trial card text on the login page ({plan} and {duration} are replaced automatically)",1]],f={};
  return h("div",{className:"card"},SF.map(function(x){f[x[0]]=h(x[2]?"textarea":"input",{value:D.settings[x[0]]||"",rows:3});return h("label",{},x[1],f[x[0]])}),
   btn("Save",function(){var s={};SF.forEach(function(x){s[x[0]]=f[x[0]].value});act("saveSettings",{settings:s})},1))};
 

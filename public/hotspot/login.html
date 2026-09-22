@@ -4,6 +4,12 @@
 <p class="muted" id="rules" style="white-space:pre-line;font-size:.9rem"></p>
 <div class="card" id="wb" hidden></div>
 $(if error)<p class="err">$(error)</p>$(endif)
+<div class="card" id="trial" hidden>
+<p id="trialtext" class="muted"></p>
+<input id="tph" type="tel" inputmode="numeric" placeholder="Your phone number (required)" autocomplete="tel">
+<p id="tmsg" class="err"></p>
+<button class="p" id="tgo">Start my free trial</button>
+</div>
 <div class="tabs"><button class="on" data-t="pin">Voucher PIN</button><button data-t="usr">Phone number</button><button data-t="mac">Auto MAC</button></div>
 <form class="t card" id="pin" method="post" action="$(link-login-only)"><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
 <input name="username" placeholder="Enter voucher PIN" autocomplete="off" autocapitalize="characters" required>
@@ -92,6 +98,10 @@ function boot(n){Promise.all([j(API+"?action=getSettings"),j(API+"?action=getPla
  var ph=String(S.whatsapp_phone||S.support_phone||"").replace(/\D/g,"");if(ph){q("#wa").href="https://wa.me/"+ph;q("#wa").hidden=false}
  var bn=(a[0].banners||[]),i=0;if(bn.length){q("#ad").hidden=false;var show=function(){var b=bn[i++%bn.length];q("#adi").src=b.image_url;if(b.link_url)q("#adl").href=b.link_url;else q("#adl").removeAttribute("href")};show();if(bn.length>1)setInterval(show,5000)}
  PLANS=a[1].plans||[];drawPlans();
+ if(S.auto_trial_enabled==="1"&&S.trial_plan_id){var tp=null;PLANS.forEach(function(x){if(String(x.plan_id)===String(S.trial_plan_id))tp=x});
+  if(tp){q("#trial").hidden=false;var tt=S.trial_card_text||"First time here? Try {plan} FREE - no payment needed.";
+   q("#trialtext").textContent=tt.replace(/\{plan\}/g,tp.name).replace(/\{duration\}/g,tp.validity);
+   q("#tgo").textContent="\u{1F381} Start my free "+tp.name;}}
  if(MAC.indexOf("$(")===-1){fetch(API+"?action=getMacHistory&mac="+encodeURIComponent(MAC)).then(function(r){return r.json()}).then(function(hh){
   if(hh.ok&&hh.found&&hh.paid_orders>0){var w=q("#wb");w.textContent="";w.hidden=false;
    var ended=(hh.last_status==="revoked"||hh.last_status==="rejected")?"was removed":(hh.last_expires?"ended "+String(hh.last_expires).slice(0,10):"has ended");
@@ -109,6 +119,18 @@ function openOrder(p){cur=p;q("#mt").textContent=p.name+" - \u20A6"+p.price;
  q("#ms").textContent=p.validity+", "+speed(p.rate_limit)+", "+p.shared_users+" device(s)";
  q("#oid").value=MAC;q("#apw").value="";q("#omsg").textContent="";
  q("#done").hidden=true;q("#go").hidden=false;q("#paynow").hidden=!liveGw();q("#ov").hidden=false}
+q("#tgo").onclick=function(){var m=q("#tmsg");m.textContent="";
+ if(MAC.indexOf("$(")!==-1){m.className="err";m.textContent="Start the trial from the WiFi login page on your device: connect to the Sornix WiFi and the page will open by itself.";return}
+ var ph=q("#tph").value.trim(),d=ph.replace(/\D/g,"");
+ if(d.length===13&&d.startsWith("234"))ph="0"+d.slice(3);else if(d.length===10&&/^[89]/.test(d))ph="0"+d;
+ if(!/^0[789][01]\d{8}$/.test(ph)){m.className="err";m.textContent="Enter your full Nigerian phone number, e.g. 08031234567 - it keeps the trial tied to you.";return}
+ var b=this;b.disabled=true;m.className="muted";m.textContent="Starting your free trial\u2026";
+ fetch(API,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"createOrder",trial:1,identifier:MAC,phone:ph})})
+  .then(function(r){return r.json()}).then(function(r){
+   if(r.ok){m.className="ok";m.textContent="\u{1F381} Trial started ("+r.order_id+")! It activates on the router in about 30 seconds - then press \u201CConnect this device\u201D on the Auto MAC tab. Your number "+ph+" is now your login on any device.";
+    q("#mph").value=ph;var mb=q('.tabs button[data-t="mac"]');if(mb)mb.click();return}
+   b.disabled=false;m.className="err";m.textContent=msg(r.error,r.message)}).catch(function(){
+   b.disabled=false;m.className="err";m.textContent="Cannot reach the server to start the trial. Check your connection and try again."});};
 q("#mac").onsubmit=function(ev){var f=this,m=q("#mmsg");m.textContent="";
  var ph=q("#mph").value.trim();
  if(!/^0[789][01]\d{8}$/.test(ph)){var d=ph.replace(/\D/g,"");if(d.length===13&&d.startsWith("234"))ph="0"+d.slice(3);else if(d.length===10&&/^[89]/.test(d))ph="0"+d;else{m.textContent="Enter your full Nigerian phone number, e.g. 08031234567 - it is required to connect this device.";return false}}

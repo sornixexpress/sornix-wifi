@@ -17,7 +17,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 const SX_VERSION = "12";
 // Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
 // re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
-const PORTAL_GEN = "6";
+const PORTAL_GEN = "7";
 const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
@@ -206,6 +206,9 @@ async function seed(db) {
     site_description: "Fast, fair neighbourhood WiFi",
     welcome_text: "Sign in or buy a plan to get online.",
     login_rules_text: "HOW IT WORKS\n1. Pick a plan, pay by bank transfer or card - you are connected in about a minute.\n2. Your plan runs for its full duration on this device (speed as listed).\n3. Have a voucher PIN? Use the Voucher PIN tab.\n4. Phone account: sign in with your phone number + password on any device.\n5. When your time ends you will be brought back here to re-buy in one tap.",
+    auto_trial_enabled: "0",
+    trial_plan_id: "",
+    trial_card_text: "First time here? Try {plan} completely FREE - no payment, no card. Enter your phone number and you are online in about 30 seconds. One free trial per customer; when it ends your number stays your login on any device.",
     support_phone: "", whatsapp_phone: "",
     outlets: "", bank_details: "",
     bank_template: "I want to buy {plan} (NGN {price}) for {identifier}. Please send bank transfer details.",
@@ -338,7 +341,32 @@ async function actAdminVoucherHistory(db, b, who) {
   return json({ ok: true, code: c, phone: v ? v.phone : null, sessions, events });
 }
 
-async function actCreateOrder(db, b) {
+// Free trial: one per customer (phone) and per device (MAC). Creates an order the router
+// sync engine activates and provisions like any approved order - no payment involved.
+async function startTrial(env, db, b) {
+  const S = await getSettings(db);
+  if (S.auto_trial_enabled !== "1") return err("trial_disabled", "The free trial is not running right now. Pick a plan below to get connected.");
+  const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(S.trial_plan_id || ""));
+  if (!plan) return err("trial_disabled", "The free-trial plan is not configured or was deactivated (fix in admin \u2192 Branding/Plans). Pick a plan below to get connected.");
+  const mac = normMac(b.identifier || b.mac || "");
+  if (!mac) return err("invalid_identifier", "The free trial must be started from the WiFi login page on your device - this page was not served by the hotspot, so we cannot see the device address. Connect to the Sornix WiFi and open the login page again.");
+  const ng = normPhoneNg(b.phone);
+  if (!ng) return err("invalid_phone", "'" + String(b.phone || "").trim() + "' is not a valid Nigerian phone number. Use the form 08031234567 - your number keeps the trial (and later plans) tied to you.");
+  const local = "0" + ng.slice(3);
+  const prior = await one(db, "SELECT order_id,paid_via FROM orders WHERE ((id_type='mac' AND identifier=?1) OR REPLACE(REPLACE(REPLACE(COALESCE(phone,''),'+',''),' ',''),'-','') IN (?2,?3)) AND (paid_via='trial' OR status IN ('approved','activated','paid')) LIMIT 1", mac, local, ng);
+  if (prior) return err("trial_used", prior.paid_via === "trial"
+    ? "This device or phone number already used its free trial (" + prior.order_id + "). Pick a plan below to continue - your phone number stays your login on any device."
+    : "This device or phone number already has a paid or active plan (" + prior.order_id + "), so no trial is needed. Use the Auto MAC tab or your phone number to connect.");
+  const id = orderId();
+  const t = nowIso();
+  await run(db, "INSERT INTO orders(order_id,plan_id,id_type,identifier,phone,status,paid_via,amount_paid,created_at,updated_at) VALUES(?1,?2,'mac',?3,?4,'approved','trial',0,?5,?5)", id, plan.plan_id, mac, local, t);
+  await audit(db, "customer", "trialStart", id + " " + mac + " " + local);
+  notify(env, "\u{1F381} Free trial started " + id + " - " + plan.name + " (" + mac + ", tel " + local + ")");
+  return json({ ok: true, trial: true, order_id: id, plan: plan.name });
+}
+
+async function actCreateOrder(db, b, env) {
+  if (b.trial) return await startTrial(env, db, b);
   const plan = await one(db, "SELECT * FROM plans WHERE plan_id=?1 AND active=1", String(b.plan_id || ""));
   if (!plan) return err("invalid_plan", "The plan '" + String(b.plan_id || "(none selected)") + "' is not available - it was removed or deactivated. Refresh the page and pick a current plan.");
   const phone = String(b.phone || "").trim();
@@ -1083,7 +1111,7 @@ export default {
           let b = {}; try { b = JSON.parse(await req.text() || "{}"); } catch (e) { return err("bad_json", "The request body was not valid JSON: " + String(e && e.message || e).slice(0, 120)); }
           const action = String(b.action || "");
           // public
-          if (action === "createOrder") return await actCreateOrder.call({ env }, env.DB, b);
+          if (action === "createOrder") return await actCreateOrder.call({ env }, env.DB, b, env);
           if (action === "verifyPayment") return await actVerifyPayment(env.DB, env, b);
           if (action === "requestAccountSms") return await actRequestAccountSms(env.DB, env, b);
           if (action === "registerVoucherPhone") return await actRegisterVoucherPhone(env.DB, b);
