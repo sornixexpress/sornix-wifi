@@ -72,6 +72,7 @@ P.dash=function(){var s=D.stats||{},box=h("div",{});
  var cust={};
  (D.orders||[]).forEach(function(o){var ph=null;
   if(/^0[789][01]\d{8}$/.test(o.identifier||""))ph=o.identifier;
+  else if(/^0[789][01]\d{8}$/.test(o.phone||""))ph=o.phone;
   else if(o.sms_phone){var d=String(o.sms_phone).replace(/\D/g,"");ph=(d.length===13&&d.startsWith("234"))?"0"+d.slice(3):(d.length===11?d:null)}
   if(!ph)return;var c=cust[ph]||(cust[ph]={ph:ph,n:0,paid:0,total:0,last:""});
   c.n++;if(o.paid_at){c.paid++;c.total+=Number(o.amount_paid||0)}

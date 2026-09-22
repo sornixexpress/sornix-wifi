@@ -4,16 +4,17 @@
 <p class="muted" id="rules" style="white-space:pre-line;font-size:.9rem"></p>
 <div class="card" id="wb" hidden></div>
 $(if error)<p class="err">$(error)</p>$(endif)
-<div class="tabs"><button class="on" data-t="pin">Voucher PIN</button><button data-t="usr">Username</button><button data-t="mac">Auto MAC</button></div>
+<div class="tabs"><button class="on" data-t="pin">Voucher PIN</button><button data-t="usr">Phone number</button><button data-t="mac">Auto MAC</button></div>
 <form class="t card" id="pin" method="post" action="$(link-login-only)"><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
 <input name="username" placeholder="Enter voucher PIN" autocomplete="off" autocapitalize="characters" required>
 <input id="vph" type="tel" inputmode="numeric" placeholder="Your phone number (required)" autocomplete="tel" required>
 <p class="muted" style="font-size:.85rem">We keep your number only to reach you about your service.</p>
 <p id="vmsg" class="err"></p><button class="p" id="pinbtn">Connect</button></form>
 <form class="t card" id="usr" method="post" action="$(link-login-only)" hidden><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
-<input name="username" placeholder="Username" autocomplete="username" required><input name="password" type="password" placeholder="Password" autocomplete="current-password"><button class="p">Connect</button></form>
+<input name="username" placeholder="Phone number, e.g. 08031234567" autocomplete="username" required><input name="password" type="password" placeholder="Password" autocomplete="current-password"><p class="muted" style="font-size:.85rem">The phone number + password you set when ordering works on any device.</p><button class="p">Connect</button></form>
 <form class="t card" id="mac" method="post" action="$(link-login-only)" hidden><input type="hidden" name="dst" value="$(link-orig)"><input type="hidden" name="popup" value="true">
-<input type="hidden" name="username" value="$(mac)"><input type="hidden" name="password" value="$(mac)"><p class="muted">Use the plan already paid for on this device ($(mac)).</p><button class="p">Connect this device</button></form>
+<input type="hidden" name="username" value="$(mac)"><input type="hidden" name="password" value="$(mac)"><p class="muted">Use the plan already paid for on this device ($(mac)).</p>
+<input id="mph" type="tel" inputmode="numeric" placeholder="Your phone number (required)" autocomplete="tel"><p class="muted" style="font-size:.85rem">We keep your number only to reach you about your service.</p><p id="mmsg" class="err"></p><button class="p" id="macbtn">Connect this device</button></form>
 
 <h2>Buy a data plan</h2><div class="grid" id="plans"><p class="muted">Loading plans…</p></div><p class="err" id="perr"></p>
 <p class="muted" id="more" hidden><button id="showall" style="width:auto;display:inline-block;padding:8px 14px">Show all plans</button></p>
@@ -54,6 +55,8 @@ var ERRS={invalid_identifier:"Enter a valid username or MAC address.",invalid_us
 var msg=function(e,m){return m||ERRS[e]||"Something went wrong ("+String(e||"unknown")+") - try again, or contact support with your order ID.";};
 
 qa(".tabs button[data-t]").forEach(function(b){b.onclick=function(){qa(".tabs button[data-t]").forEach(function(x){x.classList.toggle("on",x===b)});qa("form.t").forEach(function(f){f.hidden=f.id!==b.dataset.t})}});
+q("#usr").onsubmit=function(){var f=this,u=f.username.value.trim(),d=u.replace(/\D/g,"");
+ if(d.length===13&&d.startsWith("234"))u="0"+d.slice(3);else if(d.length===10&&/^[89]/.test(d))u="0"+d;f.username.value=u};
 q("#pin").onsubmit=function(ev){var f=this,m=q("#vmsg");m.textContent="";
  var pin=f.username.value.trim().toUpperCase();f.username.value=pin;
  var ph=q("#vph").value.trim();
@@ -106,6 +109,17 @@ function openOrder(p){cur=p;q("#mt").textContent=p.name+" - \u20A6"+p.price;
  q("#ms").textContent=p.validity+", "+speed(p.rate_limit)+", "+p.shared_users+" device(s)";
  q("#oid").value=MAC;q("#apw").value="";q("#omsg").textContent="";
  q("#done").hidden=true;q("#go").hidden=false;q("#paynow").hidden=!liveGw();q("#ov").hidden=false}
+q("#mac").onsubmit=function(ev){var f=this,m=q("#mmsg");m.textContent="";
+ var ph=q("#mph").value.trim();
+ if(!/^0[789][01]\d{8}$/.test(ph)){var d=ph.replace(/\D/g,"");if(d.length===13&&d.startsWith("234"))ph="0"+d.slice(3);else if(d.length===10&&/^[89]/.test(d))ph="0"+d;else{m.textContent="Enter your full Nigerian phone number, e.g. 08031234567 - it is required to connect this device.";return false}}
+ ev.preventDefault();
+ var b=q("#macbtn");b.disabled=true;m.className="muted";m.textContent="Registering your number\u2026";
+ fetch(API,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"registerDevicePhone",mac:MAC,phone:ph})})
+  .then(function(r){return r.json()}).then(function(r){
+   if(r.ok){f.submit();return}
+   b.disabled=false;m.className="err";m.textContent=msg(r.error,r.message)}).catch(function(){
+   b.disabled=false;m.className="err";m.textContent="Cannot reach the server to register your number. Check your connection and press Connect again."});
+ return false};
 q("#cx").onclick=function(){q("#ov").hidden=true};
 
 q("#aph").onblur=function(){var u=this.value.trim();if(!/^0[789][01]\d{8}$/.test(u)){if(u.length>3){var n2=q("#unote");n2.className="err";n2.textContent="Use a full Nigerian number, e.g. 08031234567."}return}

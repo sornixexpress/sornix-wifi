@@ -17,7 +17,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods
 const SX_VERSION = "12";
 // Bump PORTAL_GEN whenever any public/hotspot/* file changes: routers then delete and
 // re-download the portal pages once (verified by the PORTALSZ size beacon in rdiag).
-const PORTAL_GEN = "5";
+const PORTAL_GEN = "6";
 const PORTAL_FILES = ["login.html", "alogin.html", "error.html", "logout.html", "redirect.html", "status.html", "sx.css"];
 const VOUCHER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAC_RE = /^([0-9a-fA-F]{2}[:\-]?){5}[0-9a-fA-F]{2}$/;
@@ -281,6 +281,22 @@ async function actRegisterVoucherPhone(db, b) {
     await run(db, "INSERT INTO voucher_events(code,at,event,detail) VALUES(?1,?2,'phone',?3)", c, nowIso(), phone);
   }
   return json({ ok: true, recorded: !v.phone });
+}
+
+// public: Auto-MAC login also requires a phone number - bind it to the device's order
+async function actRegisterDevicePhone(db, b) {
+  const m = normMac(b.mac);
+  if (!m) return err("invalid_identifier", "'" + String(b.mac || "") + "' is not a MAC address. Use the form AA:BB:CC:DD:EE:FF.");
+  const ng = normPhoneNg(b.phone);
+  if (!ng) return err("invalid_phone", "'" + String(b.phone || "").trim() + "' is not a valid Nigerian phone number. Use the form 08031234567 - we need it to reach you about your service.");
+  const phone = "0" + ng.slice(3);
+  const o = await one(db, "SELECT order_id,phone FROM orders WHERE id_type='mac' AND identifier=?1 ORDER BY created_at DESC LIMIT 1", m);
+  if (!o) return err("not_found", "No plan was found for this device. Buy a plan below first (or use a voucher PIN), then connect.");
+  if (!o.phone) {
+    await run(db, "UPDATE orders SET phone=?1 WHERE id_type='mac' AND identifier=?2 AND (phone IS NULL OR phone='')", phone, m);
+    await audit(db, "customer", "devicePhone", m + " -> " + phone);
+  }
+  return json({ ok: true, recorded: !o.phone, order_id: o.order_id });
 }
 
 // public: what has this device bought before? (welcome-back upsell on the login page)
@@ -1071,6 +1087,7 @@ export default {
           if (action === "verifyPayment") return await actVerifyPayment(env.DB, env, b);
           if (action === "requestAccountSms") return await actRequestAccountSms(env.DB, env, b);
           if (action === "registerVoucherPhone") return await actRegisterVoucherPhone(env.DB, b);
+          if (action === "registerDevicePhone") return await actRegisterDevicePhone(env.DB, b);
           if (action === "sendOtp") return await actSendOtp(env.DB, env, b);
           if (action === "verifyOtp") return await actVerifyOtp(env.DB, env, b);
           // admin
